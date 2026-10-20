@@ -123,7 +123,7 @@ function buddySvg(fam: string, state: string) {
 // The terminal has no Svg: a kawaii glyph in the model's color instead.
 function ModelMark(ui: any, id: string, state: string) {
   const fam = family(id)
-  if ('Svg' in ui) return <ui.Svg key="mark" source={buddySvg(fam, state)} alt={`${label(fam)} buddy, ${state}`} isInteractive width={14} height={14} />
+  if ('Svg' in ui) return <ui.Svg key="mark" source={buddySvg(fam, state)} alt={`${label(fam)} buddy, ${state}`} width={14} height={14} />
   const glyph = ({ opus: '❀', sonnet: '★', haiku: '◓', fable: '☾' } as Record<string, string>)[fam] ?? '◆'
   return (
     <ui.Text key="mark" size="caption" color={WORKER_COLORS[fam] ?? ACCENT}>
@@ -214,17 +214,18 @@ let timer: { cancel: () => void } | undefined
 
 async function refreshAgents($: Api) {
   const list = await $.agent.list()
-  await update($, agents, prev =>
-    list.map(
-      (a): AgentRow => ({
-        id: a.id,
-        description: a.description,
-        type: a.type,
-        status: a.status,
-        model: agentModels.get(a.id) ?? prev.find(p => p.id === a.id)?.model,
-      }),
-    ),
+  const prev = await read($, agents)
+  const rows = list.map(
+    (a): AgentRow => ({
+      id: a.id,
+      description: a.description,
+      type: a.type,
+      status: a.status,
+      model: agentModels.get(a.id) ?? prev.find(p => p.id === a.id)?.model,
+    }),
   )
+  // This runs every few seconds while agents work; an unchanged list must not redraw the band.
+  if (JSON.stringify(rows) !== JSON.stringify(prev)) await update($, agents, () => rows)
   if (!timer && list.some(a => LIVE.has(a.status))) {
     timer = $.clock.after(POLL_MS, () => {
       timer = undefined
