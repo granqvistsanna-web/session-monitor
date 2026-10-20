@@ -9,6 +9,8 @@ A Claude Code mod that shows, live in the chat:
 
 It's one small line above the prompt; `hide` shrinks it to just the model, and clicking that brings it back. `/monitor` opens the same view as a pane.
 
+At the right edge a small pie counts down the hour the prompt cache stays warm, restarting on every main-thread model call (green, then amber under 15 min, red under 5, an empty ring once cold). Clicking the minutes next to it asks Claude for a handover (the `handover` skill in `~/.claude/skills/handover`), a paste-ready summary for a fresh session.
+
 Quota comes from `~/.claude/skills/usage/scripts/quota.py` (checked every 5 minutes and after each worker call). Off-Claude worker figures are read from the usage log at `~/.claude/usage/delegate-log.jsonl` (or `$DELEGATE_USAGE_LOG`); without that log only Claude subagents are counted.
 
 ## Install

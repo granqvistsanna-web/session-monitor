@@ -209,3 +209,33 @@ test('a narrow band drops names, then labels, instead of wrapping', async ($, on
   expect(tiny).not.toContain('delegated')
   expect(tiny).not.toContain('Kimi')
 })
+
+test('the cache pie counts down from the last model call, and asks for a handover', async ($, on) => {
+  mock.clock(on)
+  mock.store(on, {})
+  on('ui.render', { component: 'AbovePrompt' }, (($: any, e: any) => {
+    const { Box } = $.ui.resolve(e)
+    return <Box />
+  }) as any)
+  on('turn.step', (async function* () {
+    return { answer: '', toolUses: [] }
+  }) as any)
+  let submitted = ''
+  on('prompt.submit', ((_$: any, e: any) => {
+    submitted = e.text
+    return { text: e.text }
+  }) as any)
+  const before = await $.ui.mount({ plugin: 'session-monitor', surface: 'desktop', component: 'AbovePrompt', props: PROPS } as any)
+  expect(await before.find({ key: 'cache' })).toBeUndefined()
+  await before.unmount()
+  const steps = ($ as any).turn.step({ model: 'claude-opus-5-5', effort: 'high' })
+  for await (const _ of steps) void _
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const band = await $.ui.mount({ plugin: 'session-monitor', surface, component: 'AbovePrompt', props: PROPS } as any)
+    expect(await band.find({ key: 'cache' })).toBeDefined()
+    expect(JSON.stringify(await band.drawn())).toMatch(/60m/)
+    await band.press({ key: 'cache' })
+    expect(submitted).toContain('handover')
+    await band.unmount()
+  }
+})

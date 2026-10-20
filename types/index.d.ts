@@ -29,6 +29,8 @@ declare module 'claude-code' {
       isAsking: boolean
       activeWorker: string
       calls: Record<string, number>
+      cacheAt: number
+      cacheNow: number
     }
   }
 }

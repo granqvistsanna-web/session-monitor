@@ -24,6 +24,10 @@ const isAsking = atom({ plugin: 'session-monitor', key: 'isAsking' } as const, f
 const activeWorker = atom({ plugin: 'session-monitor', key: 'activeWorker' } as const, '')
 // Wrapper calls this session made itself, counted from its own Bash calls (the shared log has no session id).
 const calls = atom({ plugin: 'session-monitor', key: 'calls' } as const, {})
+// When the main thread last called the model (each call refreshes the prompt cache; -1 before the first), and the clock
+// the pie reads, ticked while the cache is warm.
+const cacheAt = atom({ plugin: 'session-monitor', key: 'cacheAt' } as const, -1)
+const cacheNow = atom({ plugin: 'session-monitor', key: 'cacheNow' } as const, 0)
 
 const shortModel = (id: string) =>
   id
@@ -36,6 +40,10 @@ const QUOTA_WARN = 70
 const QUOTA_MS = 5 * 60_000
 // The buddy dozes off after this long with nothing happening.
 const SLEEP_MS = 4 * 60_000
+// The prompt cache lives this long after the last request; the pie counts it down.
+const CACHE_MS = 60 * 60_000
+const CACHE_TICK_MS = 30_000
+const HANDOVER_PROMPT = 'Use the handover skill: write a handover of this session I can paste into a new one.'
 
 const ACCENT = '#D97757'
 const MUTED = '#9AA5B8'
@@ -236,6 +244,71 @@ async function refreshAgents($: Api) {
   }
 }
 
+// --- Prompt cache countdown ------------------------------------------------
+
+let cacheTick: { cancel: () => void } | undefined
+
+async function touchCache($: Api) {
+  const now = await $.clock.now()
+  await update($, cacheAt, () => now)
+  await update($, cacheNow, () => now)
+  startCacheTick($)
+}
+
+// Moves the pie's clock on until the cache has gone cold.
+function startCacheTick($: Api) {
+  if (cacheTick) return
+  cacheTick = $.clock.every(CACHE_TICK_MS, () => {
+    void (async () => {
+      const t = await $.clock.now()
+      await update($, cacheNow, () => t)
+      if (t - (await read($, cacheAt)) >= CACHE_MS) {
+        cacheTick?.cancel()
+        cacheTick = undefined
+      }
+    })()
+  })
+}
+
+const cacheTone = (min: number) => (min <= 0 ? MUTED : min <= 5 ? '#E5484D' : min <= 15 ? '#E8BF5E' : '#93C47D')
+
+// A pie: the filled wedge is what is left of the hour, clockwise from 12. Empty ring once cold.
+function pieSvg(frac: number, color: string) {
+  const r = 6
+  const ring = `<circle cx="8" cy="8" r="${r + 0.9}" fill="none" stroke="${color}" stroke-opacity=".45" stroke-width="1"/>`
+  if (frac <= 0) return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16">${ring}</svg>`
+  if (frac >= 0.999) return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16">${ring}<circle cx="8" cy="8" r="${r}" fill="${color}"/></svg>`
+  const a = frac * 2 * Math.PI
+  const x = (8 + r * Math.sin(a)).toFixed(2)
+  const y = (8 - r * Math.cos(a)).toFixed(2)
+  const wedge = `<path d="M8 8V${8 - r}A${r} ${r} 0 ${frac > 0.5 ? 1 : 0} 1 ${x} ${y}Z" fill="${color}"/>`
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16">${ring}${wedge}</svg>`
+}
+
+// Minutes left on the cache, or undefined before the first model call.
+async function cacheLeft($: Api) {
+  const at = await read($, cacheAt)
+  if (at < 0) return undefined
+  const now = Math.max(await read($, cacheNow), at)
+  return Math.max(0, Math.ceil((CACHE_MS - (now - at)) / 60_000))
+}
+
+// The pie at the band's edge, then the minutes left; pressing the minutes asks for a handover.
+// Svg can't sit inside a Button, so on desktop the pie is the picture and the minutes the control.
+function CachePie($: Api, ui: any, min: number) {
+  const { Box, Text, Button } = ui
+  const color = cacheTone(min)
+  const glyph = min <= 0 ? '○' : min > 45 ? '●' : min > 30 ? '◕' : min > 15 ? '◑' : '◔'
+  const left = min > 0 ? `${min}m` : 'cold'
+  const alt = min > 0 ? `Prompt cache warm, ${min} minutes left` : 'Prompt cache expired'
+  return (
+    <Box key="cache-pie" flexDirection="row" alignItems="center" columnGap={1}>
+      {'Svg' in ui ? <ui.Svg source={pieSvg(min / 60, color)} alt={alt} width={12} height={12} /> : <Text color={color}>{glyph}</Text>}
+      <Button key="cache" plain dimColor label={left} onPress={() => $.prompt.submit({ text: HANDOVER_PROMPT })} />
+    </Box>
+  )
+}
+
 let moodTimer: { cancel: () => void } | undefined
 
 // A passing mood (happy, error) shows for `ms`, then settles to idle; idle dozes off after a while.
@@ -292,6 +365,7 @@ async function Card($: Api, e: { surface: string }, ui: any, mode: 'band' | 'pan
   // What the buddy shows: waiting on you beats working beats the mood between turns.
   const isWorking = (e as any).props?.isWorking === true
   const state = (await read($, isAsking)) ? 'waiting' : isWorking ? 'working' : await read($, mood)
+  const cacheMin = mode === 'band' ? await cacheLeft($) : undefined
 
   if (mode === 'band' && (await read($, isCollapsed))) {
     return (
@@ -302,6 +376,7 @@ async function Card($: Api, e: { surface: string }, ui: any, mode: 'band' | 'pan
             {name} ▸
           </Text>
         </Button>
+        {cacheMin !== undefined && CachePie($, ui, cacheMin)}
       </Box>
     )
   }
@@ -338,7 +413,10 @@ async function Card($: Api, e: { surface: string }, ui: any, mode: 'band' | 'pan
       delegatedData.reduce((sum, c) => sum + chipCells(c, compact), 0) +
       (lowData.length ? (level < 3 ? 6 : 1) : 0) +
       lowData.reduce((sum, c) => sum + chipCells(c, compact), 0)
-    const right = (showAgents && mode === 'band' ? 4 + agentText(level).length : 0) + (mode === 'band' ? 6 : 0)
+    const right =
+      (showAgents && mode === 'band' ? 4 + agentText(level).length : 0) +
+      (mode === 'band' ? 6 : 0) +
+      (cacheMin !== undefined ? 7 : 0)
     return left + right + 2
   }
   const cols = mode === 'band' ? Number((e as any).props?.bodyColumns) || 999 : 999
@@ -386,6 +464,7 @@ async function Card($: Api, e: { surface: string }, ui: any, mode: 'band' | 'pan
               {live.length ? `${live.length} running` : 'no agents running'}
             </Text>
           )}
+          {cacheMin !== undefined && CachePie($, ui, cacheMin)}
           {mode === 'band' && (
             <Button key="hide" plain onPress={() => toggleCollapsed($)}>
               <Text size="caption" dimColor>
@@ -440,6 +519,11 @@ export const register: Register = on => {
     await refreshWorkers($).catch(() => undefined)
     void refreshQuota($, true).catch(() => undefined)
     await refreshAgents($)
+    // After a reload the last call's time is still in state: keep counting from it.
+    const at = await read($, cacheAt)
+    const now = await $.clock.now()
+    if (at >= 0) await update($, cacheNow, () => now)
+    if (at >= 0 && now - at < CACHE_MS) startCacheTick($)
 
     return ran
   })
@@ -454,6 +538,7 @@ export const register: Register = on => {
     if (e.agentId) {
       agentModels.set(e.agentId, e.model)
     } else {
+      await touchCache($)
       await update($, model, () => e.model)
       await update($, effort, () => (e.effort === undefined ? '' : String(e.effort)))
     }
