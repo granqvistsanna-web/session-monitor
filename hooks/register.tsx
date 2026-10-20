@@ -17,6 +17,9 @@ const workers = atom({ plugin: 'session-monitor', key: 'workers' } as const, [])
 const spawns = atom({ plugin: 'session-monitor', key: 'spawns' } as const, {})
 const quota = atom({ plugin: 'session-monitor', key: 'quota' } as const, {})
 const isCollapsed = atom({ plugin: 'session-monitor', key: 'isCollapsed' } as const, false)
+// The buddy's mood between turns, and whether a tool call is waiting on the person.
+const mood = atom({ plugin: 'session-monitor', key: 'mood' } as const, 'idle')
+const isAsking = atom({ plugin: 'session-monitor', key: 'isAsking' } as const, false)
 
 const shortModel = (id: string) =>
   id
@@ -27,6 +30,8 @@ const shortModel = (id: string) =>
 // A worker's quota shows once this much of it is used.
 const QUOTA_WARN = 70
 const QUOTA_MS = 5 * 60_000
+// The buddy dozes off after this long with nothing happening.
+const SLEEP_MS = 4 * 60_000
 
 const ACCENT = '#D97757'
 const MUTED = '#9AA5B8'
@@ -68,8 +73,10 @@ const label = (key: string) =>
   ({ haiku: 'Haiku', sonnet: 'Sonnet', opus: 'Opus', fable: 'Fable', kimi: 'Kimi', gemini: 'Gemini', openrouter: 'OpenRouter' })[key] ?? key
 
 // A tiny figure per model family, 14px, in the model's color: Opus a bunny, Sonnet a star,
-// Haiku a ghost, Fable a moon. Two eyes blink and glance around (CSS, still under reduced motion).
-function buddySvg(fam: string) {
+// Haiku a ghost, Fable a moon. Its eyes show the session: glancing around while working, round
+// while waiting on you, ^ ^ when a turn finishes, × after an error, closed with a z when asleep.
+// All motion is CSS and stops under reduced motion.
+function buddySvg(fam: string, state: string) {
   const color = WORKER_COLORS[fam] ?? MUTED
   const shapes: Record<string, string> = {
     opus: '<rect x="4" y=".6" width="2.6" height="7.4" rx="1.3"/><rect x="9.4" y=".6" width="2.6" height="7.4" rx="1.3"/><circle cx="8" cy="10.4" r="5.4"/>',
@@ -78,26 +85,43 @@ function buddySvg(fam: string) {
     fable: '<mask id="m"><rect width="16" height="16" fill="#fff"/><circle cx="12.4" cy="5.6" r="5.4" fill="#000"/></mask><circle cx="8" cy="8.6" r="6.8" mask="url(#m)"/>',
   }
   // Where each figure's two eyes sit: x of the left eye, x of the right, y.
-  const eyes: Record<string, number[]> = { opus: [6, 10, 10.6], sonnet: [6.7, 9.3, 9.2], haiku: [6, 10, 9], fable: [3.7, 6.3, 10] }
-  const [lx, rx, ey] = eyes[fam] ?? eyes.opus
+  const spots: Record<string, number[]> = { opus: [6, 10, 10.6], sonnet: [6.7, 9.3, 9.2], haiku: [6, 10, 9], fable: [3.7, 6.3, 10] }
+  const [lx, rx, ey] = spots[fam] ?? spots.opus
   const delay = ({ opus: 0, sonnet: 1.3, haiku: 2.1, fable: 0.7 } as Record<string, number>)[fam] ?? 0
+  const eye = (x: number) => {
+    if (state === 'happy') return `<path class="s" d="M${x - 1.1} ${ey + 0.5}l1.1-1.2 1.1 1.2"/>`
+    if (state === 'error') return `<path class="s" d="M${x - 0.9} ${ey - 0.9}l1.8 1.8m0-1.8l-1.8 1.8"/>`
+    if (state === 'sleep') return `<path class="s" d="M${x - 1} ${ey + 0.2}h2"/>`
+    if (state === 'waiting') return `<ellipse class="e" cx="${x}" cy="${ey + 0.4}" rx="1.25" ry="1.75"/>`
+    return `<ellipse class="e" cx="${x}" cy="${ey}" rx="1" ry="1.45"/>`
+  }
+  const look = state === 'working' ? 3.2 : 8
+  const blink = state === 'waiting' ? 3 : 4.6
+  const zz = state === 'sleep' ? '<path class="z" d="M12 1.2h2.4l-2.4 2.6h2.4"/>' : ''
   const css =
-    `.e{transform-box:fill-box;transform-origin:center;animation:b 4.6s ${delay}s infinite}` +
-    `.l{animation:l 8s ${delay}s infinite}` +
+    // Eyes: ink in light mode, a near-black in dark mode so they keep their contrast on the body.
+    ':root{--k:#2B1D0E}@media (prefers-color-scheme:dark){:root{--k:#141016}}' +
+    '.k{fill:var(--k)}.s{fill:none;stroke:var(--k);stroke-width:.9;stroke-linecap:round;stroke-linejoin:round}' +
+    `.z{fill:none;stroke:${MUTED};stroke-width:.7;stroke-linecap:round;stroke-linejoin:round;animation:z 3s infinite}` +
+    `.e{transform-box:fill-box;transform-origin:center;animation:b ${blink}s ${delay}s infinite}` +
+    (state === 'waiting' || state === 'sleep' ? '' : `.l{animation:l ${look}s ${delay}s infinite}`) +
+    (state === 'working' ? '.f{animation:f 1.4s ease-in-out infinite}' : '') +
     '@keyframes b{0%,92%,100%{transform:scaleY(1)}95%{transform:scaleY(.15)}}' +
     '@keyframes l{0%,30%,100%{transform:translateX(0)}36%,52%{transform:translateX(-.7px)}58%,76%{transform:translateX(.7px)}}' +
-    '@media (prefers-reduced-motion:reduce){.e,.l{animation:none}}'
+    '@keyframes f{0%,100%{transform:translateY(0)}50%{transform:translateY(-.6px)}}' +
+    '@keyframes z{0%,100%{opacity:.3;transform:translateY(0)}50%{opacity:1;transform:translateY(-.5px)}}' +
+    '@media (prefers-reduced-motion:reduce){.e,.l,.f,.z{animation:none}}'
   return (
-    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><style>${css}</style>` +
+    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><style>${css}</style><g class="f">` +
     `<g fill="${color}">${shapes[fam] ?? shapes.opus}</g>` +
-    `<g class="l" fill="#2B1D0E"><ellipse class="e" cx="${lx}" cy="${ey}" rx="1" ry="1.45"/><ellipse class="e" cx="${rx}" cy="${ey}" rx="1" ry="1.45"/></g></svg>`
+    `<g class="l k">${eye(lx)}${eye(rx)}</g>${zz}</g></svg>`
   )
 }
 
 // The terminal has no Svg: a kawaii glyph in the model's color instead.
-function ModelMark(ui: any, id: string) {
+function ModelMark(ui: any, id: string, state: string) {
   const fam = family(id)
-  if ('Svg' in ui) return <ui.Svg key="mark" source={buddySvg(fam)} alt={`${label(fam)} buddy`} isInteractive width={14} height={14} />
+  if ('Svg' in ui) return <ui.Svg key="mark" source={buddySvg(fam, state)} alt={`${label(fam)} buddy, ${state}`} isInteractive width={14} height={14} />
   const glyph = ({ opus: '❀', sonnet: '★', haiku: '◓', fable: '☾' } as Record<string, string>)[fam] ?? '◆'
   return (
     <ui.Text key="mark" size="caption" color={WORKER_COLORS[fam] ?? ACCENT}>
@@ -207,6 +231,17 @@ async function refreshAgents($: Api) {
   }
 }
 
+let moodTimer: { cancel: () => void } | undefined
+
+// A passing mood (happy, error) shows for `ms`, then settles to idle; idle dozes off after a while.
+async function setMood($: Api, next: string, ms?: number) {
+  moodTimer?.cancel()
+  moodTimer = undefined
+  await update($, mood, () => next)
+  if (ms) moodTimer = $.clock.after(ms, () => void setMood($, 'idle'))
+  else if (next === 'idle') moodTimer = $.clock.after(SLEEP_MS, () => void setMood($, 'sleep'))
+}
+
 async function toggleCollapsed($: Api) {
   const next = !(await read($, isCollapsed))
   await update($, isCollapsed, () => next)
@@ -237,11 +272,14 @@ async function Card($: Api, e: { surface: string }, ui: any, mode: 'band' | 'pan
   const done = list.filter(a => !LIVE.has(a.status))
   const shown = [...live, ...done.slice(-3).reverse()]
   const name = m ? shortModel(m) : 'model ?'
+  // What the buddy shows: waiting on you beats working beats the mood between turns.
+  const isWorking = (e as any).props?.isWorking === true
+  const state = (await read($, isAsking)) ? 'waiting' : isWorking ? 'working' : await read($, mood)
 
   if (mode === 'band' && (await read($, isCollapsed))) {
     return (
       <Box flexDirection="row" alignItems="center" columnGap={1}>
-        {ModelMark(ui, m)}
+        {ModelMark(ui, m, state)}
         <Button key="show" plain onPress={() => toggleCollapsed($)}>
           <Text size="caption" dimColor>
             {name} ▸
@@ -267,7 +305,7 @@ async function Card($: Api, e: { surface: string }, ui: any, mode: 'band' | 'pan
     <Box flexDirection="column" paddingX="sm">
       <Box flexDirection="row" justifyContent="space-between" columnGap={2}>
         <Box flexDirection="row" alignItems="center" columnGap={1} flexShrink={1}>
-        {ModelMark(ui, m)}
+        {ModelMark(ui, m, state)}
         <Text size="caption" tabular wrap="truncate-end">
           <Text weight="semibold">{name}</Text>
           {eff ? <Text dimColor> · {eff}</Text> : ''}
@@ -340,6 +378,7 @@ export const register: Register = on => {
     $.ui.status(undefined)
     const collapsed = (await $.store.get('collapsed')) === true
     await update($, isCollapsed, () => collapsed)
+    await setMood($, 'idle')
     const id = await $.session.model()
     await update($, model, () => id)
     sessionStartedAt = (await $.session.usage()).startedAt
@@ -379,6 +418,26 @@ export const register: Register = on => {
     return ran
   })
 
+  // A call put to the person's decider: the buddy looks up at the prompt until it runs or the turn ends.
+  on('tool.check', async ($, e, next) => {
+    const ran = await next(e)
+    if (!e.agentId && (ran as any)?.decision === 'ask') await update($, isAsking, () => true)
+
+    return ran
+  })
+
+  on('tool.call', async ($, e, next) => {
+    if (await read($, isAsking)) await update($, isAsking, () => false)
+
+    return next(e)
+  })
+
+  on('prompt.submit', async ($, e, next) => {
+    await setMood($, 'idle')
+
+    return next(e)
+  })
+
   on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
     const ran = await next(e)
     if (LOG_RE.test(e.command)) {
@@ -391,6 +450,10 @@ export const register: Register = on => {
 
   on('turn.complete', async ($, e, next) => {
     const ran = await next(e)
+    await update($, isAsking, () => false)
+    if (e.reason === 'error') await setMood($, 'error', 5000)
+    else if (e.reason === 'answer') await setMood($, 'happy', 3000)
+    else await setMood($, 'idle')
     await refreshAgents($)
     await refreshWorkers($).catch(() => undefined)
     void refreshQuota($).catch(() => undefined)

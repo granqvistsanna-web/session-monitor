@@ -25,6 +25,8 @@ declare module 'claude-code' {
       spawns: Record<string, number>
       isCollapsed: boolean
       quota: Record<string, number>
+      mood: string
+      isAsking: boolean
     }
   }
 }

@@ -120,3 +120,28 @@ test('model mark is an animated buddy on desktop and a glyph on terminal', async
   expect(JSON.stringify(await term.drawn())).not.toMatch(/<svg/)
   await term.unmount()
 })
+
+const moodOf = async ($: any, isWorking = false) => {
+  const band = await $.ui.mount({ plugin: 'session-monitor', surface: 'desktop', component: 'AbovePrompt', props: { ...PROPS, isWorking } } as any)
+  const alt = JSON.stringify(await band.drawn()).match(/buddy, (\w+)/)?.[1]
+  await band.unmount()
+  return alt
+}
+
+test('buddy follows the session: working, waiting, finished, error', async ($, on) => {
+  mock.clock(on)
+  mock.store(on, {})
+  on('ui.render', { component: 'AbovePrompt' }, (($: any, e: any) => {
+    const { Box } = $.ui.resolve(e)
+    return <Box />
+  }) as any)
+  on('tool.check', (() => ({ decision: 'ask' })) as any)
+  on('turn.complete', (() => ({ text: 'ok' })) as any)
+  expect(await moodOf($, true)).toBe('working')
+  await $.tool.check({ tool: 'Bash', input: {} } as any)
+  expect(await moodOf($, true)).toBe('waiting')
+  await $.turn.complete({ reason: 'answer', answer: 'ok', durationMs: 1, isAborted: false, turnId: 't' } as any)
+  expect(await moodOf($)).toBe('happy')
+  await $.turn.complete({ reason: 'error', answer: '', durationMs: 1, isAborted: false, turnId: 't2' } as any)
+  expect(await moodOf($)).toBe('error')
+})
