@@ -282,7 +282,7 @@ async function Card($: Api, e: { surface: string }, ui: any, mode: 'band' | 'pan
 
   if (mode === 'band' && (await read($, isCollapsed))) {
     return (
-      <Box flexDirection="row" alignItems="center" columnGap={1}>
+      <Box flexDirection="row" alignItems="center" columnGap={1} paddingX="sm">
         {ModelMark(ui, m, state)}
         <Button key="show" plain onPress={() => toggleCollapsed($)}>
           <Text size="caption" dimColor>
