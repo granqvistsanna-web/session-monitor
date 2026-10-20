@@ -67,29 +67,38 @@ const family = (id: string) => {
 const label = (key: string) =>
   ({ haiku: 'Haiku', sonnet: 'Sonnet', opus: 'Opus', fable: 'Fable', kimi: 'Kimi', gemini: 'Gemini', openrouter: 'OpenRouter' })[key] ?? key
 
-// A 7×7 pixel fairy per model family, drawn 2px a pixel (14px) where the surface has Svg.
-// Hair and body in the model's color, wings a tint of it, a kawaii face, and a charm on top.
-function fairySvg(fam: string) {
+// A tiny figure per model family, 14px, in the model's color: Opus a bunny, Sonnet a star,
+// Haiku a ghost, Fable a moon. Two eyes blink and glance around (CSS, still under reduced motion).
+function buddySvg(fam: string) {
   const color = WORKER_COLORS[fam] ?? MUTED
-  const charm = ({ opus: '#F5C542', sonnet: '#FF8FB8', haiku: '#8EE0A8', fable: '#FFD84A' } as Record<string, string>)[fam] ?? '#F5C542'
-  const rows = ['...X...', '..BBB..', 'W.EHE.W', 'WW.B.WW', 'WWBBBWW', '.W.B.W.', '..B.B..']
-  const fill: Record<string, string> = { X: charm, B: color, W: color, E: '#3B2A2A', H: '#FFE3D3' }
-  let rects = ''
-  rows.forEach((row, y) =>
-    [...row].forEach((c, x) => {
-      if (c === '.') return
-      const op = c === 'W' ? ' fill-opacity=".45"' : ''
-      rects += `<rect x="${x}" y="${y}" width="1" height="1" fill="${fill[c]}"${op}/>`
-    }),
+  const shapes: Record<string, string> = {
+    opus: '<rect x="4" y=".6" width="2.6" height="7.4" rx="1.3"/><rect x="9.4" y=".6" width="2.6" height="7.4" rx="1.3"/><circle cx="8" cy="10.4" r="5.4"/>',
+    sonnet: '<path d="M8 1.4L10.29 5.64L15.04 6.51L11.71 10.01L12.35 14.79L8 12.7L3.65 14.79L4.29 10.01L.96 6.51L5.71 5.64Z" stroke="' + color + '" stroke-width="1.4" stroke-linejoin="round"/>',
+    haiku: '<path d="M2 15V8a6 6 0 0 1 12 0v7l-2-1.6-2 1.6-2-1.6-2 1.6-2-1.6z"/>',
+    fable: '<mask id="m"><rect width="16" height="16" fill="#fff"/><circle cx="12.4" cy="5.6" r="5.4" fill="#000"/></mask><circle cx="8" cy="8.6" r="6.8" mask="url(#m)"/>',
+  }
+  // Where each figure's two eyes sit: x of the left eye, x of the right, y.
+  const eyes: Record<string, number[]> = { opus: [6, 10, 10.6], sonnet: [6.7, 9.3, 9.2], haiku: [6, 10, 9], fable: [3.7, 6.3, 10] }
+  const [lx, rx, ey] = eyes[fam] ?? eyes.opus
+  const delay = ({ opus: 0, sonnet: 1.3, haiku: 2.1, fable: 0.7 } as Record<string, number>)[fam] ?? 0
+  const css =
+    `.e{transform-box:fill-box;transform-origin:center;animation:b 4.6s ${delay}s infinite}` +
+    `.l{animation:l 8s ${delay}s infinite}` +
+    '@keyframes b{0%,92%,100%{transform:scaleY(1)}95%{transform:scaleY(.15)}}' +
+    '@keyframes l{0%,30%,100%{transform:translateX(0)}36%,52%{transform:translateX(-.7px)}58%,76%{transform:translateX(.7px)}}' +
+    '@media (prefers-reduced-motion:reduce){.e,.l{animation:none}}'
+  return (
+    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><style>${css}</style>` +
+    `<g fill="${color}">${shapes[fam] ?? shapes.opus}</g>` +
+    `<g class="l" fill="#2B1D0E"><ellipse class="e" cx="${lx}" cy="${ey}" rx="1" ry="1.45"/><ellipse class="e" cx="${rx}" cy="${ey}" rx="1" ry="1.45"/></g></svg>`
   )
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 7 7" shape-rendering="crispEdges">${rects}</svg>`
 }
 
 // The terminal has no Svg: a kawaii glyph in the model's color instead.
 function ModelMark(ui: any, id: string) {
   const fam = family(id)
-  if ('Svg' in ui) return <ui.Svg key="mark" source={fairySvg(fam)} alt={`${label(fam)} fairy`} width={14} height={14} />
-  const glyph = ({ opus: '✿', sonnet: '♡', haiku: '✧', fable: '☾' } as Record<string, string>)[fam] ?? '◆'
+  if ('Svg' in ui) return <ui.Svg key="mark" source={buddySvg(fam)} alt={`${label(fam)} buddy`} isInteractive width={14} height={14} />
+  const glyph = ({ opus: '❀', sonnet: '★', haiku: '◓', fable: '☾' } as Record<string, string>)[fam] ?? '◆'
   return (
     <ui.Text key="mark" size="caption" color={WORKER_COLORS[fam] ?? ACCENT}>
       {glyph}

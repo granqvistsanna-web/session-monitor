@@ -1,6 +1,6 @@
 {
   "name": "session-monitor",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Which model is working and what has been delegated, in one line above the prompt",
   "types": "./types/index.d.ts",
   "author": {
