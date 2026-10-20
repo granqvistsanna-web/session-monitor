@@ -253,13 +253,17 @@ async function toggleCollapsed($: Api) {
   await $.store.set('collapsed', next)
 }
 
-type ChipData = { key: string; color: string; name: string; n: number; used?: number }
+type ChipData = { key: string; provider: string; color: string; name: string; n: number; used?: number }
 
-// compact drops the name and keeps the colour dot, so a narrow band still shows who did what.
-const Chip = (Text: any, c: ChipData, compact = false) => (
+// compact swaps the name for a coloured initial, "K 2 · G 2 · O 1", so a narrow band still says who.
+// Opus gets two letters so it never reads as OpenRouter.
+const INITIALS: Record<string, string> = { kimi: 'K', gemini: 'G', openrouter: 'O', haiku: 'H', sonnet: 'S', opus: 'Op', fable: 'F' }
+const initial = (c: ChipData) => INITIALS[c.provider] ?? c.name.slice(0, 1)
+
+const Chip = (Text: any, c: ChipData, compact = false, first = true) => (
   <Text key={c.key}>
-    {compact ? ' ' : '  '}
-    <Text color={c.color}>●</Text>
+    {compact ? <Text dimColor>{first ? ' ' : ' · '}</Text> : '  '}
+    {compact ? <Text color={c.color}>{initial(c)}</Text> : <Text color={c.color}>●</Text>}
     {compact ? '' : ` ${c.name}`}
     {c.n ? <Text weight="semibold"> {c.n}</Text> : ''}
     {c.used !== undefined ? <Text color={quotaTone(c.used)}> {Math.round(c.used)}%</Text> : ''}
@@ -267,7 +271,7 @@ const Chip = (Text: any, c: ChipData, compact = false) => (
 )
 
 const chipCells = (c: ChipData, compact: boolean) =>
-  (compact ? 2 : 3 + c.name.length) + (c.n ? 1 + String(c.n).length : 0) + (c.used !== undefined ? 2 + String(Math.round(c.used)).length : 0)
+  (compact ? 3 + initial(c).length : 3 + c.name.length) + (c.n ? 1 + String(c.n).length : 0) + (c.used !== undefined ? 2 + String(Math.round(c.used)).length : 0)
 
 // One line: the model at work, what has been delegated, and live agents.
 async function Card($: Api, e: { surface: string }, ui: any, mode: 'band' | 'pane') {
@@ -302,7 +306,7 @@ async function Card($: Api, e: { surface: string }, ui: any, mode: 'band' | 'pan
     )
   }
 
-  const chip = (key: string, k: string, n: number, used?: number): ChipData => ({ key, color: WORKER_COLORS[k] ?? MUTED, name: label(k), n, used })
+  const chip = (key: string, k: string, n: number, used?: number): ChipData => ({ key, provider: k, color: WORKER_COLORS[k] ?? MUTED, name: label(k), n, used })
   const delegatedData = [
     ...Object.entries(sp).map(([k, n]) => chip(`s-${k}`, k, n)),
     ...Object.entries(mine).filter(([, n]) => n > 0).map(([k, n]) => chip(`s-${k}`, k, n, low(k))),
@@ -316,7 +320,7 @@ async function Card($: Api, e: { surface: string }, ui: any, mode: 'band' | 'pan
   const liveModels = [...perModel].map(([name, n]) => (n > 1 ? `${name} ×${n}` : name))
 
   // Fit the row to the band's width instead of wrapping: each level drops a little more.
-  // 0 full · 1 no effort · 2 chips without names, short agent and worker text · 3 no labels at all.
+  // 0 full · 1 no effort · 2 chips as initials, short agent and worker text · 3 no labels at all.
   const agentText = (level: number) =>
     !live.length
       ? level >= 3 ? `${list.length}` : `${list.length} agents`
@@ -340,8 +344,8 @@ async function Card($: Api, e: { surface: string }, ui: any, mode: 'band' | 'pan
   const cols = mode === 'band' ? Number((e as any).props?.bodyColumns) || 999 : 999
   const level = [0, 1, 2].find(l => cellsAt(l) <= cols) ?? 3
   const compact = level >= 2
-  const delegated = delegatedData.map(c => Chip(Text, c, compact))
-  const lowOnly = lowData.map(c => Chip(Text, c, compact))
+  const delegated = delegatedData.map((c, i) => Chip(Text, c, compact, i === 0))
+  const lowOnly = lowData.map((c, i) => Chip(Text, c, compact, i === 0))
 
   return (
     <Box flexDirection="column" paddingX="sm">

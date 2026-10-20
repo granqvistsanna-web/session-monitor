@@ -204,6 +204,7 @@ test('a narrow band drops names, then labels, instead of wrapping', async ($, on
   const mid = await drawnAt($, 48)
   expect(mid).toContain('delegated')
   expect(mid).not.toContain('OpenRouter')
+  for (const letter of ['"K"', '"G"', '"O"', '" · "']) expect(mid).toContain(letter)
   const tiny = await drawnAt($, 24)
   expect(tiny).not.toContain('delegated')
   expect(tiny).not.toContain('Kimi')
