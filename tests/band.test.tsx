@@ -74,3 +74,34 @@ test('a worker low on quota shows its percentage, others stay hidden', async ($,
   expect(drawn).not.toContain('OpenRouter')
   await band.unmount()
 })
+
+test('several running agents show a count per model', async ($, on) => {
+  mock.clock(on)
+  mock.store(on, {})
+  const models: Record<string, string> = { a: 'claude-haiku-5-5', b: 'claude-haiku-5-5', c: 'claude-sonnet-5-5' }
+  const running = (id: string) => ({ id, description: id, type: 'Explore', status: 'running' })
+  let n = 0
+  on('agent.spawn', (async () => {
+    const id = 'abc'[n++]!
+    return { agentId: id, model: models[id] }
+  }) as any)
+  on('process.run', (async () => ({ value: { exitCode: 0, stdout: '{}', stderr: '' } })) as any)
+  on('command.register', (async () => ({ value: undefined })) as any)
+  on('session.model', (async () => ({ value: 'claude-opus-5-5' })) as any)
+  on('session.usage', (async () => ({ value: { startedAt: 0 } })) as any)
+  on('agent.list', (async () => ({ value: [running('a'), running('b'), running('c')] })) as any)
+  on('env.get', (async () => ({ value: '/home' })) as any)
+  on('fs.exists', (async () => ({ value: false })) as any)
+  on('ui.render', { component: 'AbovePrompt' }, (($: any, e: any) => {
+    const { Box } = $.ui.resolve(e)
+    return <Box />
+  }) as any)
+  on('session.start', (async (_$: any, e: any) => ({ cwd: e.cwd })) as any)
+  await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true } as never)
+  for (let i = 0; i < 3; i++) await $.agent.spawn({ prompt: 'x', description: 'x' } as never)
+  const band = await $.ui.mount({ plugin: 'session-monitor', surface: 'desktop', component: 'AbovePrompt', props: PROPS } as any)
+  const drawn = JSON.stringify(await band.drawn())
+  expect(drawn).toContain('3 running')
+  expect(drawn).toContain('Haiku ×2')
+  await band.unmount()
+})

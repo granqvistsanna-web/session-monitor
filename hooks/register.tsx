@@ -217,7 +217,9 @@ async function Card($: Api, e: { surface: string }, ui: any, mode: 'band' | 'pan
   const lowOnly = Object.keys(q)
     .filter(k => low(k) !== undefined && !ws.some(w => w.provider === k && w.session > 0))
     .map(k => Chip(Text, `q-${k}`, WORKER_COLORS[k] ?? MUTED, label(k), 0, low(k)))
-  const liveModels = [...new Set(live.map(a => (a.model ? shortModel(a.model) : '')).filter(Boolean))]
+  const perModel = new Map<string, number>()
+  for (const a of live) if (a.model) perModel.set(label(family(a.model)), (perModel.get(label(family(a.model))) ?? 0) + 1)
+  const liveModels = [...perModel].map(([name, n]) => (n > 1 ? `${name} ×${n}` : name))
 
   return (
     <Box flexDirection="column" paddingX="sm">
