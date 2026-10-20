@@ -49,3 +49,28 @@ test('band stacks above another plugin\'s band', async ($, on) => {
   expect(await band.find({ key: 'other' })).toBeDefined()
   await band.unmount()
 })
+
+test('a worker low on quota shows its percentage, others stay hidden', async ($, on) => {
+  mock.clock(on)
+  mock.store(on, {})
+  on('process.run', (async () => ({ value: { exitCode: 0, stdout: '{"kimi": 85, "openrouter": 10}', stderr: '' } })) as any)
+  on('command.register', (async () => ({ value: undefined })) as any)
+  on('session.model', (async () => ({ value: 'claude-opus-5-5' })) as any)
+  on('session.usage', (async () => ({ value: { startedAt: 0 } })) as any)
+  on('agent.list', (async () => ({ value: [] })) as any)
+  on('env.get', (async () => ({ value: '/home' })) as any)
+  on('fs.exists', (async () => ({ value: false })) as any)
+  on('ui.render', { component: 'AbovePrompt' }, (($: any, e: any) => {
+    const { Box } = $.ui.resolve(e)
+    return <Box />
+  }) as any)
+  on('session.start', (async (_$: any, e: any) => ({ cwd: e.cwd })) as any)
+  await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true } as never)
+  await new Promise(r => setTimeout(r, 0))
+  const band = await $.ui.mount({ plugin: 'session-monitor', surface: 'desktop', component: 'AbovePrompt', props: PROPS } as any)
+  const drawn = JSON.stringify(await band.drawn())
+  expect(drawn).toContain('Kimi')
+  expect(drawn).toContain('85')
+  expect(drawn).not.toContain('OpenRouter')
+  await band.unmount()
+})

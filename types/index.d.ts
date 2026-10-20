@@ -24,6 +24,7 @@ declare module 'claude-code' {
       workers: Worker[]
       spawns: Record<string, number>
       isCollapsed: boolean
+      quota: Record<string, number>
     }
   }
 }

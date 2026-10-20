@@ -15,6 +15,7 @@ const agents = atom({ plugin: 'session-monitor', key: 'agents' } as const, [])
 const isBandOpen = atom({ plugin: 'session-monitor', key: 'isBandOpen' } as const, false)
 const workers = atom({ plugin: 'session-monitor', key: 'workers' } as const, [])
 const spawns = atom({ plugin: 'session-monitor', key: 'spawns' } as const, {})
+const quota = atom({ plugin: 'session-monitor', key: 'quota' } as const, {})
 const isCollapsed = atom({ plugin: 'session-monitor', key: 'isCollapsed' } as const, false)
 
 const shortModel = (id: string) =>
@@ -22,6 +23,10 @@ const shortModel = (id: string) =>
     .replace(/^claude-/, '')
     .replace(/-(\d+)-(\d+)$/, ' $1.$2')
     .replace(/\[.*\]$/, '')
+
+// A worker's quota shows once this much of it is used.
+const QUOTA_WARN = 70
+const QUOTA_MS = 5 * 60_000
 
 const ACCENT = '#D97757'
 const MUTED = '#9AA5B8'
@@ -120,6 +125,24 @@ async function refreshWorkers($: Api) {
   await update($, workers, () => list)
 }
 
+// Share of each worker's quota used, from the usage skill's quota script.
+// Gemini has no quota API, so it never appears here.
+let quotaAt = 0
+async function refreshQuota($: Api, force = false) {
+  const now = await $.clock.now()
+  if (!force && now - quotaAt < QUOTA_MS) return
+  quotaAt = now
+  const home = await $.env.get('HOME')
+  const { exitCode, stdout } = await $.process.run(['python3', `${home}/.claude/skills/usage/scripts/quota.py`], { stdin: '', timeoutMs: 20_000 })
+  if (exitCode !== 0) return
+  const parsed = JSON.parse(stdout) as Record<string, unknown>
+  const next: Record<string, number> = {}
+  for (const [k, v] of Object.entries(parsed)) if (typeof v === 'number') next[k] = v
+  await update($, quota, () => next)
+}
+
+const quotaTone = (pct: number) => (pct >= 90 ? '#E5484D' : '#E8BF5E')
+
 // Learned from agent.spawn results and each subagent's turn.step.
 const agentModels = new Map<string, string>()
 let timer: { cancel: () => void } | undefined
@@ -151,10 +174,12 @@ async function toggleCollapsed($: Api) {
   await $.store.set('collapsed', next)
 }
 
-const Chip = (Text: any, key: string, color: string, name: string, n: number) => (
+const Chip = (Text: any, key: string, color: string, name: string, n: number, used?: number) => (
   <Text key={key}>
     {'  '}
-    <Text color={color}>●</Text> {name} <Text weight="semibold">{n}</Text>
+    <Text color={color}>●</Text> {name}
+    {n ? <Text weight="semibold"> {n}</Text> : ''}
+    {used !== undefined ? <Text color={quotaTone(used)}> {Math.round(used)}%</Text> : ''}
   </Text>
 )
 
@@ -166,6 +191,8 @@ async function Card($: Api, e: { surface: string }, ui: any, mode: 'band' | 'pan
   const list = await read($, agents)
   const ws = await read($, workers)
   const sp = await read($, spawns)
+  const q = await read($, quota)
+  const low = (k: string) => (q[k] !== undefined && q[k] >= QUOTA_WARN ? q[k] : undefined)
   const isOpen = mode === 'pane' || (await read($, isBandOpen))
   const live = list.filter(a => LIVE.has(a.status))
   const done = list.filter(a => !LIVE.has(a.status))
@@ -184,8 +211,12 @@ async function Card($: Api, e: { surface: string }, ui: any, mode: 'band' | 'pan
 
   const delegated = [
     ...Object.entries(sp).map(([k, n]) => Chip(Text, `s-${k}`, WORKER_COLORS[k] ?? MUTED, label(k), n)),
-    ...ws.filter(w => w.session > 0).map(w => Chip(Text, `s-${w.provider}`, WORKER_COLORS[w.provider] ?? MUTED, label(w.provider), w.session)),
+    ...ws.filter(w => w.session > 0).map(w => Chip(Text, `s-${w.provider}`, WORKER_COLORS[w.provider] ?? MUTED, label(w.provider), w.session, low(w.provider))),
   ]
+  // A worker running low shows even before this session has used it.
+  const lowOnly = Object.keys(q)
+    .filter(k => low(k) !== undefined && !ws.some(w => w.provider === k && w.session > 0))
+    .map(k => Chip(Text, `q-${k}`, WORKER_COLORS[k] ?? MUTED, label(k), 0, low(k)))
   const liveModels = [...new Set(live.map(a => (a.model ? shortModel(a.model) : '')).filter(Boolean))]
 
   return (
@@ -196,6 +227,8 @@ async function Card($: Api, e: { surface: string }, ui: any, mode: 'band' | 'pan
           {eff ? <Text dimColor> · {eff}</Text> : ''}
           {delegated.length ? <Text dimColor>{'   delegated'}</Text> : ''}
           {delegated}
+          {lowOnly.length ? <Text dimColor>{'   low'}</Text> : ''}
+          {lowOnly}
         </Text>
         <Box flexDirection="row" columnGap={2} flexShrink={0}>
           {mode === 'band' && list.length === 0 ? (
@@ -264,6 +297,7 @@ export const register: Register = on => {
     await update($, model, () => id)
     sessionStartedAt = (await $.session.usage()).startedAt
     await refreshWorkers($).catch(() => undefined)
+    void refreshQuota($, true).catch(() => undefined)
     await refreshAgents($)
 
     return ran
@@ -300,7 +334,10 @@ export const register: Register = on => {
 
   on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
     const ran = await next(e)
-    if (LOG_RE.test(e.command)) await refreshWorkers($).catch(() => undefined)
+    if (LOG_RE.test(e.command)) {
+      await refreshWorkers($).catch(() => undefined)
+      void refreshQuota($, true).catch(() => undefined)
+    }
 
     return ran
   })
@@ -309,6 +346,7 @@ export const register: Register = on => {
     const ran = await next(e)
     await refreshAgents($)
     await refreshWorkers($).catch(() => undefined)
+    void refreshQuota($).catch(() => undefined)
 
     return ran
   })

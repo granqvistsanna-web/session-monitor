@@ -4,11 +4,12 @@ A Claude Code mod that shows, live in the chat:
 
 - the model and effort level the session is running on
 - delegation: what this session sent to Haiku, Sonnet, Opus, Fable, Kimi, Gemini and OpenRouter
+- quota: Kimi or OpenRouter at 70% or more of its quota shows with the percentage (amber, red from 90%); Gemini has no quota API so it never shows one
 - agents: how many are running and on which model (click to list them)
 
 It's one small line above the prompt; `hide` shrinks it to just the model, and clicking that brings it back. `/monitor` opens the same view as a pane.
 
-Off-Claude worker figures are read from the usage log at `~/.claude/usage/delegate-log.jsonl` (or `$DELEGATE_USAGE_LOG`); without that log only Claude subagents are counted.
+Quota comes from `~/.claude/skills/usage/scripts/quota.py` (checked every 5 minutes and after each worker call). Off-Claude worker figures are read from the usage log at `~/.claude/usage/delegate-log.jsonl` (or `$DELEGATE_USAGE_LOG`); without that log only Claude subagents are counted.
 
 ## Install
 
