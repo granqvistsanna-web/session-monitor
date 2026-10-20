@@ -2,14 +2,13 @@
 
 A Claude Code mod that shows, live in the chat:
 
-- the model and effort level of the session
-- plan usage: 5-hour and 7-day limits, context fill, session cost
-- agents: how many are running, with status, type and model
-- delegation: what this session sent to Haiku, Sonnet, Kimi, Gemini and OpenRouter, plus each off-Claude worker's calls today, OpenRouter's free calls left and how useful its drafts have been
+- the model and effort level the session is running on
+- delegation: what this session sent to Haiku, Sonnet, Opus, Fable, Kimi, Gemini and OpenRouter
+- agents: how many are running and on which model (click to list them)
 
-A one-line band sits above the prompt (click the agent count to expand it). `/monitor` opens a larger pane.
+It's one small line above the prompt; `hide` shrinks it to just the model, and clicking that brings it back. `/monitor` opens the same view as a pane.
 
-Off-Claude worker figures are read from the usage log at `~/.claude/usage/delegate-log.jsonl` (or `$DELEGATE_USAGE_LOG`); without that log those rows stay empty.
+Off-Claude worker figures are read from the usage log at `~/.claude/usage/delegate-log.jsonl` (or `$DELEGATE_USAGE_LOG`); without that log only Claude subagents are counted.
 
 ## Install
 

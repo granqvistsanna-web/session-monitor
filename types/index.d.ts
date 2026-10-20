@@ -6,15 +6,6 @@ export type AgentRow = {
   model?: string
 }
 
-export type Limit = { kind: string; percentUsed: number; resetsAt?: string }
-
-export type Usage = {
-  contextPercent?: number
-  contextWindow: number
-  limits: Limit[]
-  costUsd?: number
-}
-
 export type Worker = {
   provider: string
   today: number
@@ -29,10 +20,10 @@ declare module 'claude-code' {
       model: string
       effort: string
       agents: AgentRow[]
-      usage: Usage | null
       isBandOpen: boolean
       workers: Worker[]
       spawns: Record<string, number>
+      isCollapsed: boolean
     }
   }
 }
