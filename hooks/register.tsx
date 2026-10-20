@@ -67,6 +67,36 @@ const family = (id: string) => {
 const label = (key: string) =>
   ({ haiku: 'Haiku', sonnet: 'Sonnet', opus: 'Opus', fable: 'Fable', kimi: 'Kimi', gemini: 'Gemini', openrouter: 'OpenRouter' })[key] ?? key
 
+// A 7×7 pixel fairy per model family, drawn 2px a pixel (14px) where the surface has Svg.
+// Hair and body in the model's color, wings a tint of it, a kawaii face, and a charm on top.
+function fairySvg(fam: string) {
+  const color = WORKER_COLORS[fam] ?? MUTED
+  const charm = ({ opus: '#F5C542', sonnet: '#FF8FB8', haiku: '#8EE0A8', fable: '#FFD84A' } as Record<string, string>)[fam] ?? '#F5C542'
+  const rows = ['...X...', '..BBB..', 'W.EHE.W', 'WW.B.WW', 'WWBBBWW', '.W.B.W.', '..B.B..']
+  const fill: Record<string, string> = { X: charm, B: color, W: color, E: '#3B2A2A', H: '#FFE3D3' }
+  let rects = ''
+  rows.forEach((row, y) =>
+    [...row].forEach((c, x) => {
+      if (c === '.') return
+      const op = c === 'W' ? ' fill-opacity=".45"' : ''
+      rects += `<rect x="${x}" y="${y}" width="1" height="1" fill="${fill[c]}"${op}/>`
+    }),
+  )
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 7 7" shape-rendering="crispEdges">${rects}</svg>`
+}
+
+// The terminal has no Svg: a kawaii glyph in the model's color instead.
+function ModelMark(ui: any, id: string) {
+  const fam = family(id)
+  if ('Svg' in ui) return <ui.Svg key="mark" source={fairySvg(fam)} alt={`${label(fam)} fairy`} width={14} height={14} />
+  const glyph = ({ opus: '✿', sonnet: '♡', haiku: '✧', fable: '☾' } as Record<string, string>)[fam] ?? '◆'
+  return (
+    <ui.Text key="mark" size="caption" color={WORKER_COLORS[fam] ?? ACCENT}>
+      {glyph}
+    </ui.Text>
+  )
+}
+
 // Start of "today" for each provider's quota: Gemini resets at midnight Pacific,
 // OpenRouter at 00:00 UTC, Kimi has rolling windows so local midnight is used.
 function dayStart(provider: string, now: number) {
@@ -201,11 +231,14 @@ async function Card($: Api, e: { surface: string }, ui: any, mode: 'band' | 'pan
 
   if (mode === 'band' && (await read($, isCollapsed))) {
     return (
-      <Button key="show" plain onPress={() => toggleCollapsed($)}>
-        <Text size="caption" dimColor>
-          <Text color={ACCENT}>◆</Text> {name} ▸
-        </Text>
-      </Button>
+      <Box flexDirection="row" alignItems="center" columnGap={1}>
+        {ModelMark(ui, m)}
+        <Button key="show" plain onPress={() => toggleCollapsed($)}>
+          <Text size="caption" dimColor>
+            {name} ▸
+          </Text>
+        </Button>
+      </Box>
     )
   }
 
@@ -224,14 +257,17 @@ async function Card($: Api, e: { surface: string }, ui: any, mode: 'band' | 'pan
   return (
     <Box flexDirection="column" paddingX="sm">
       <Box flexDirection="row" justifyContent="space-between" columnGap={2}>
+        <Box flexDirection="row" alignItems="center" columnGap={1} flexShrink={1}>
+        {ModelMark(ui, m)}
         <Text size="caption" tabular wrap="truncate-end">
-          <Text color={ACCENT}>◆</Text> <Text weight="semibold">{name}</Text>
+          <Text weight="semibold">{name}</Text>
           {eff ? <Text dimColor> · {eff}</Text> : ''}
           {delegated.length ? <Text dimColor>{'   delegated'}</Text> : ''}
           {delegated}
           {lowOnly.length ? <Text dimColor>{'   low'}</Text> : ''}
           {lowOnly}
         </Text>
+        </Box>
         <Box flexDirection="row" columnGap={2} flexShrink={0}>
           {mode === 'band' && list.length === 0 ? (
             ''

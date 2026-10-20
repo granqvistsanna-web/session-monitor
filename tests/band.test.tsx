@@ -105,3 +105,18 @@ test('several running agents show a count per model', async ($, on) => {
   expect(drawn).toContain('Haiku ×2')
   await band.unmount()
 })
+
+test('model mark is a pixel fairy on desktop and a glyph on terminal', async ($, on) => {
+  mock.clock(on)
+  mock.store(on, {})
+  on('ui.render', { component: 'AbovePrompt' }, (($: any, e: any) => {
+    const { Box } = $.ui.resolve(e)
+    return <Box />
+  }) as any)
+  const desk = await $.ui.mount({ plugin: 'session-monitor', surface: 'desktop', component: 'AbovePrompt', props: PROPS } as any)
+  expect(JSON.stringify(await desk.drawn())).toMatch(/fairy/)
+  await desk.unmount()
+  const term = await $.ui.mount({ plugin: 'session-monitor', surface: 'terminal', component: 'AbovePrompt', props: PROPS } as any)
+  expect(JSON.stringify(await term.drawn())).not.toMatch(/<svg/)
+  await term.unmount()
+})
