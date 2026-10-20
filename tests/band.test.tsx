@@ -167,3 +167,44 @@ test('a foreground Kimi call shows Kimi working until it returns', async (t$, on
   expect(JSON.stringify(await band.drawn())).not.toContain('working…')
   await band.unmount()
 })
+
+const twoWorkerCalls = async ($: any, on: any) => {
+  mock.clock(on)
+  mock.store(on, {})
+  on('ui.render', { component: 'AbovePrompt' }, (($: any, e: any) => {
+    const { Box } = $.ui.resolve(e)
+    return <Box />
+  }) as any)
+  on('tool.call', (async () => ({ result: 'ok' })) as any)
+  await $.tool.call({
+    tool: 'Bash',
+    command: '( ~/.claude/skills/kimi/scripts/kimi.sh "a" ) & ( ~/.claude/skills/gemini/scripts/gemini.sh "a" ) & wait',
+    run_in_background: true,
+  } as any)
+  await $.tool.call({ tool: 'Bash', command: '~/.claude/skills/openrouter/scripts/openrouter.sh "b"', run_in_background: true } as any)
+}
+
+const drawnAt = async ($: any, bodyColumns: number) => {
+  const band = await $.ui.mount({ plugin: 'session-monitor', surface: 'desktop', component: 'AbovePrompt', props: { ...PROPS, bodyColumns } } as any)
+  const drawn = JSON.stringify(await band.drawn())
+  expect(await band.find({ key: 'hide' })).toBeDefined()
+  await band.unmount()
+  return drawn
+}
+
+test('delegated counts only the wrapper calls this session made', async ($, on) => {
+  await twoWorkerCalls($, on)
+  const drawn = await drawnAt($, 120)
+  expect(drawn).toContain('delegated')
+  for (const name of ['Kimi', 'Gemini', 'OpenRouter']) expect(drawn).toContain(name)
+})
+
+test('a narrow band drops names, then labels, instead of wrapping', async ($, on) => {
+  await twoWorkerCalls($, on)
+  const mid = await drawnAt($, 48)
+  expect(mid).toContain('delegated')
+  expect(mid).not.toContain('OpenRouter')
+  const tiny = await drawnAt($, 24)
+  expect(tiny).not.toContain('delegated')
+  expect(tiny).not.toContain('Kimi')
+})

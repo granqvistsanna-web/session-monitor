@@ -22,6 +22,8 @@ const mood = atom({ plugin: 'session-monitor', key: 'mood' } as const, 'idle')
 const isAsking = atom({ plugin: 'session-monitor', key: 'isAsking' } as const, false)
 // The off-Claude worker a foreground Bash call is waiting on right now (kimi, gemini, openrouter).
 const activeWorker = atom({ plugin: 'session-monitor', key: 'activeWorker' } as const, '')
+// Wrapper calls this session made itself, counted from its own Bash calls (the shared log has no session id).
+const calls = atom({ plugin: 'session-monitor', key: 'calls' } as const, {})
 
 const shortModel = (id: string) =>
   id
@@ -251,14 +253,21 @@ async function toggleCollapsed($: Api) {
   await $.store.set('collapsed', next)
 }
 
-const Chip = (Text: any, key: string, color: string, name: string, n: number, used?: number) => (
-  <Text key={key}>
-    {'  '}
-    <Text color={color}>●</Text> {name}
-    {n ? <Text weight="semibold"> {n}</Text> : ''}
-    {used !== undefined ? <Text color={quotaTone(used)}> {Math.round(used)}%</Text> : ''}
+type ChipData = { key: string; color: string; name: string; n: number; used?: number }
+
+// compact drops the name and keeps the colour dot, so a narrow band still shows who did what.
+const Chip = (Text: any, c: ChipData, compact = false) => (
+  <Text key={c.key}>
+    {compact ? ' ' : '  '}
+    <Text color={c.color}>●</Text>
+    {compact ? '' : ` ${c.name}`}
+    {c.n ? <Text weight="semibold"> {c.n}</Text> : ''}
+    {c.used !== undefined ? <Text color={quotaTone(c.used)}> {Math.round(c.used)}%</Text> : ''}
   </Text>
 )
+
+const chipCells = (c: ChipData, compact: boolean) =>
+  (compact ? 2 : 3 + c.name.length) + (c.n ? 1 + String(c.n).length : 0) + (c.used !== undefined ? 2 + String(Math.round(c.used)).length : 0)
 
 // One line: the model at work, what has been delegated, and live agents.
 async function Card($: Api, e: { surface: string }, ui: any, mode: 'band' | 'pane') {
@@ -266,8 +275,8 @@ async function Card($: Api, e: { surface: string }, ui: any, mode: 'band' | 'pan
   const m = await read($, model)
   const eff = await read($, effort)
   const list = await read($, agents)
-  const ws = await read($, workers)
   const sp = await read($, spawns)
+  const mine = await read($, calls)
   const q = await read($, quota)
   const low = (k: string) => (q[k] !== undefined && q[k] >= QUOTA_WARN ? q[k] : undefined)
   const isOpen = mode === 'pane' || (await read($, isBandOpen))
@@ -293,49 +302,78 @@ async function Card($: Api, e: { surface: string }, ui: any, mode: 'band' | 'pan
     )
   }
 
-  const delegated = [
-    ...Object.entries(sp).map(([k, n]) => Chip(Text, `s-${k}`, WORKER_COLORS[k] ?? MUTED, label(k), n)),
-    ...ws.filter(w => w.session > 0).map(w => Chip(Text, `s-${w.provider}`, WORKER_COLORS[w.provider] ?? MUTED, label(w.provider), w.session, low(w.provider))),
+  const chip = (key: string, k: string, n: number, used?: number): ChipData => ({ key, color: WORKER_COLORS[k] ?? MUTED, name: label(k), n, used })
+  const delegatedData = [
+    ...Object.entries(sp).map(([k, n]) => chip(`s-${k}`, k, n)),
+    ...Object.entries(mine).filter(([, n]) => n > 0).map(([k, n]) => chip(`s-${k}`, k, n, low(k))),
   ]
   // A worker running low shows even before this session has used it.
-  const lowOnly = Object.keys(q)
-    .filter(k => low(k) !== undefined && !ws.some(w => w.provider === k && w.session > 0))
-    .map(k => Chip(Text, `q-${k}`, WORKER_COLORS[k] ?? MUTED, label(k), 0, low(k)))
+  const lowData = Object.keys(q)
+    .filter(k => low(k) !== undefined && !(mine[k] > 0))
+    .map(k => chip(`q-${k}`, k, 0, low(k)))
   const perModel = new Map<string, number>()
   for (const a of live) if (a.model) perModel.set(label(family(a.model)), (perModel.get(label(family(a.model))) ?? 0) + 1)
   const liveModels = [...perModel].map(([name, n]) => (n > 1 ? `${name} ×${n}` : name))
 
+  // Fit the row to the band's width instead of wrapping: each level drops a little more.
+  // 0 full · 1 no effort · 2 chips without names, short agent and worker text · 3 no labels at all.
+  const agentText = (level: number) =>
+    !live.length
+      ? level >= 3 ? `${list.length}` : `${list.length} agents`
+      : level >= 2
+      ? level >= 3 ? `${live.length}` : `${live.length} running`
+      : `${live.length} running${liveModels.length ? ` · ${liveModels.join(', ')}` : ''}`
+  const showAgents = mode === 'pane' || list.length > 0
+  const cellsAt = (level: number) => {
+    const compact = level >= 2
+    const left =
+      2 + name.length +
+      (eff && level < 1 ? 3 + eff.length : 0) +
+      (worker ? 6 + label(worker).length + (compact ? 0 : 9) : 0) +
+      (delegatedData.length ? (level < 3 ? 12 : 1) : 0) +
+      delegatedData.reduce((sum, c) => sum + chipCells(c, compact), 0) +
+      (lowData.length ? (level < 3 ? 6 : 1) : 0) +
+      lowData.reduce((sum, c) => sum + chipCells(c, compact), 0)
+    const right = (showAgents && mode === 'band' ? 4 + agentText(level).length : 0) + (mode === 'band' ? 6 : 0)
+    return left + right + 2
+  }
+  const cols = mode === 'band' ? Number((e as any).props?.bodyColumns) || 999 : 999
+  const level = [0, 1, 2].find(l => cellsAt(l) <= cols) ?? 3
+  const compact = level >= 2
+  const delegated = delegatedData.map(c => Chip(Text, c, compact))
+  const lowOnly = lowData.map(c => Chip(Text, c, compact))
+
   return (
     <Box flexDirection="column" paddingX="sm">
-      <Box flexDirection="row" justifyContent="space-between" columnGap={2}>
+      <Box flexDirection="row" justifyContent="space-between" alignItems="center" columnGap={compact ? 1 : 2}>
         <Box flexDirection="row" alignItems="center" columnGap={1} flexShrink={1}>
         {ModelMark(ui, m, state)}
         <Text size="caption" tabular wrap="truncate-end">
           <Text weight="semibold">{name}</Text>
-          {eff ? <Text dimColor> · {eff}</Text> : ''}
+          {eff && level < 1 ? <Text dimColor> · {eff}</Text> : ''}
           {worker ? (
             <Text>
               <Text dimColor>{'  → '}</Text>
               <Text color={WORKER_COLORS[worker] ?? MUTED}>●</Text> <Text weight="semibold">{label(worker)}</Text>
-              <Text dimColor> working…</Text>
+              {compact ? '' : <Text dimColor> working…</Text>}
             </Text>
           ) : (
             ''
           )}
-          {delegated.length ? <Text dimColor>{'   delegated'}</Text> : ''}
+          {delegated.length ? <Text dimColor>{level < 3 ? '   delegated' : ' '}</Text> : ''}
           {delegated}
-          {lowOnly.length ? <Text dimColor>{'   low'}</Text> : ''}
+          {lowOnly.length ? <Text dimColor>{level < 3 ? '   low' : ' '}</Text> : ''}
           {lowOnly}
         </Text>
         </Box>
-        <Box flexDirection="row" columnGap={2} flexShrink={0}>
+        <Box flexDirection="row" columnGap={compact ? 1 : 2} flexShrink={0}>
           {mode === 'band' && list.length === 0 ? (
             ''
           ) : mode === 'band' ? (
             <Button key="agents" plain onPress={() => update($, isBandOpen, open => !open)}>
               <Text size="caption" dimColor={!live.length}>
                 <Text color={live.length ? '#93C47D' : undefined}>{live.length ? '●' : '○'}</Text>{' '}
-                {live.length ? `${live.length} running${liveModels.length ? ` · ${liveModels.join(', ')}` : ''}` : `${list.length} agents`}
+                {agentText(level)}
                 {isOpen ? ' ▾' : ' ▸'}
               </Text>
             </Button>
@@ -453,8 +491,15 @@ export const register: Register = on => {
 
   on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
     // A wrapper call in the foreground: show the worker while it runs. A background call returns
-    // at once, so it shows only in the delegated tally once its log row lands.
-    const worker = (e as any).run_in_background ? undefined : e.command.match(/(kimi|gemini|openrouter)\.sh/)?.[1]
+    // at once; both count toward this session's delegated tally right away.
+    const used = [...e.command.matchAll(/scripts\/(kimi|gemini|openrouter)\.sh/g)].map(m => m[1])
+    if (used.length)
+      await update($, calls, all => {
+        const tally = { ...all }
+        for (const k of used) tally[k] = (tally[k] ?? 0) + 1
+        return tally
+      })
+    const worker = (e as any).run_in_background ? undefined : used[0]
     if (worker) await update($, activeWorker, () => worker)
     let ran
     try {

@@ -28,6 +28,7 @@ declare module 'claude-code' {
       mood: string
       isAsking: boolean
       activeWorker: string
+      calls: Record<string, number>
     }
   }
 }
