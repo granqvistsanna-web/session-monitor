@@ -17,7 +17,7 @@ test('band draws, hides and shows on terminal and desktop', async ($, on) => {
     expect(await band.find({ key: 'show' })).toBeDefined()
     await band.press({ key: 'show' })
     expect(await band.find({ key: 'hide' })).toBeDefined()
-    expect(JSON.stringify(await band.drawn())).not.toMatch(/\$\d|context|5h|7d/)
+    expect(JSON.stringify(await band.drawn())).not.toMatch(/\$\d|context|5h|7d|delegated|nothing yet|0 agents/)
     await band.unmount()
   }
 })

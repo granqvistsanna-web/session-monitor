@@ -194,16 +194,18 @@ async function Card($: Api, e: { surface: string }, ui: any, mode: 'band' | 'pan
         <Text size="caption" tabular wrap="truncate-end">
           <Text color={ACCENT}>◆</Text> <Text weight="semibold">{name}</Text>
           {eff ? <Text dimColor> · {eff}</Text> : ''}
-          <Text dimColor>{'   delegated'}</Text>
-          {delegated.length ? delegated : <Text dimColor> · nothing yet</Text>}
+          {delegated.length ? <Text dimColor>{'   delegated'}</Text> : ''}
+          {delegated}
         </Text>
         <Box flexDirection="row" columnGap={2} flexShrink={0}>
-          {mode === 'band' ? (
+          {mode === 'band' && list.length === 0 ? (
+            ''
+          ) : mode === 'band' ? (
             <Button key="agents" plain onPress={() => update($, isBandOpen, open => !open)}>
               <Text size="caption" dimColor={!live.length}>
                 <Text color={live.length ? '#93C47D' : undefined}>{live.length ? '●' : '○'}</Text>{' '}
                 {live.length ? `${live.length} running${liveModels.length ? ` · ${liveModels.join(', ')}` : ''}` : `${list.length} agents`}
-                {list.length ? (isOpen ? ' ▾' : ' ▸') : ''}
+                {isOpen ? ' ▾' : ' ▸'}
               </Text>
             </Button>
           ) : (
