@@ -1,0 +1,9 @@
+{
+  "name": "session-monitor",
+  "version": "0.2.0",
+  "description": "Live view of the session's model, agents and their status, and usage limits",
+  "types": "./types/index.d.ts",
+  "author": {
+    "name": "Sanna Granqvist"
+  }
+}
