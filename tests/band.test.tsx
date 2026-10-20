@@ -145,3 +145,25 @@ test('buddy follows the session: working, waiting, finished, error', async ($, o
   await $.turn.complete({ reason: 'error', answer: '', durationMs: 1, isAborted: false, turnId: 't2' } as any)
   expect(await moodOf($)).toBe('error')
 })
+
+test('a foreground Kimi call shows Kimi working until it returns', async (t$, on) => {
+  mock.clock(on)
+  mock.store(on, {})
+  on('ui.render', { component: 'AbovePrompt' }, (($: any, e: any) => {
+    const { Box } = $.ui.resolve(e)
+    return <Box />
+  }) as any)
+  let seen = ''
+  on('tool.call', (async () => {
+    const band = await (t$ as any).ui.mount({ plugin: 'session-monitor', surface: 'desktop', component: 'AbovePrompt', props: PROPS })
+    seen = JSON.stringify(await band.drawn())
+    await band.unmount()
+    return { result: 'ok' }
+  }) as any)
+  await t$.tool.call({ tool: 'Bash', command: 'cat x | ~/.claude/skills/kimi/scripts/kimi.sh "Review"' } as any)
+  expect(seen).toContain('Kimi')
+  expect(seen).toContain('working')
+  const band = await t$.ui.mount({ plugin: 'session-monitor', surface: 'desktop', component: 'AbovePrompt', props: PROPS } as any)
+  expect(JSON.stringify(await band.drawn())).not.toContain('working…')
+  await band.unmount()
+})

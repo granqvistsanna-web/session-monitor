@@ -20,6 +20,8 @@ const isCollapsed = atom({ plugin: 'session-monitor', key: 'isCollapsed' } as co
 // The buddy's mood between turns, and whether a tool call is waiting on the person.
 const mood = atom({ plugin: 'session-monitor', key: 'mood' } as const, 'idle')
 const isAsking = atom({ plugin: 'session-monitor', key: 'isAsking' } as const, false)
+// The off-Claude worker a foreground Bash call is waiting on right now (kimi, gemini, openrouter).
+const activeWorker = atom({ plugin: 'session-monitor', key: 'activeWorker' } as const, '')
 
 const shortModel = (id: string) =>
   id
@@ -272,6 +274,7 @@ async function Card($: Api, e: { surface: string }, ui: any, mode: 'band' | 'pan
   const done = list.filter(a => !LIVE.has(a.status))
   const shown = [...live, ...done.slice(-3).reverse()]
   const name = m ? shortModel(m) : 'model ?'
+  const worker = await read($, activeWorker)
   // What the buddy shows: waiting on you beats working beats the mood between turns.
   const isWorking = (e as any).props?.isWorking === true
   const state = (await read($, isAsking)) ? 'waiting' : isWorking ? 'working' : await read($, mood)
@@ -309,6 +312,15 @@ async function Card($: Api, e: { surface: string }, ui: any, mode: 'band' | 'pan
         <Text size="caption" tabular wrap="truncate-end">
           <Text weight="semibold">{name}</Text>
           {eff ? <Text dimColor> · {eff}</Text> : ''}
+          {worker ? (
+            <Text>
+              <Text dimColor>{'  → '}</Text>
+              <Text color={WORKER_COLORS[worker] ?? MUTED}>●</Text> <Text weight="semibold">{label(worker)}</Text>
+              <Text dimColor> working…</Text>
+            </Text>
+          ) : (
+            ''
+          )}
           {delegated.length ? <Text dimColor>{'   delegated'}</Text> : ''}
           {delegated}
           {lowOnly.length ? <Text dimColor>{'   low'}</Text> : ''}
@@ -439,7 +451,16 @@ export const register: Register = on => {
   })
 
   on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
-    const ran = await next(e)
+    // A wrapper call in the foreground: show the worker while it runs. A background call returns
+    // at once, so it shows only in the delegated tally once its log row lands.
+    const worker = (e as any).run_in_background ? undefined : e.command.match(/(kimi|gemini|openrouter)\.sh/)?.[1]
+    if (worker) await update($, activeWorker, () => worker)
+    let ran
+    try {
+      ran = await next(e)
+    } finally {
+      if (worker) await update($, activeWorker, () => '')
+    }
     if (LOG_RE.test(e.command)) {
       await refreshWorkers($).catch(() => undefined)
       void refreshQuota($, true).catch(() => undefined)

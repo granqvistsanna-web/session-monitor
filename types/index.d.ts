@@ -27,6 +27,7 @@ declare module 'claude-code' {
       quota: Record<string, number>
       mood: string
       isAsking: boolean
+      activeWorker: string
     }
   }
 }
