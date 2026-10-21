@@ -192,22 +192,33 @@ const drawnAt = async ($: any, bodyColumns: number) => {
   return drawn
 }
 
-test('delegated counts only the wrapper calls this session made', async ($, on) => {
+test('a finished worker call leaves no trace in the band', async ($, on) => {
   await twoWorkerCalls($, on)
   const drawn = await drawnAt($, 120)
-  expect(drawn).toContain('delegated')
-  for (const name of ['Kimi', 'Gemini', 'OpenRouter']) expect(drawn).toContain(name)
+  expect(drawn).not.toContain('delegated')
+  for (const name of ['Kimi', 'Gemini', 'OpenRouter']) expect(drawn).not.toContain(name)
 })
 
-test('a narrow band drops names, then labels, instead of wrapping', async ($, on) => {
-  await twoWorkerCalls($, on)
-  const mid = await drawnAt($, 48)
-  expect(mid).toContain('delegated')
-  expect(mid).not.toContain('OpenRouter')
-  for (const letter of ['"K"', '"G"', '"O"', '" · "']) expect(mid).toContain(letter)
-  const tiny = await drawnAt($, 24)
-  expect(tiny).not.toContain('delegated')
-  expect(tiny).not.toContain('Kimi')
+test('a worker call cut off mid-turn stops showing once the turn ends', async (t$, on) => {
+  mock.clock(on)
+  mock.store(on, {})
+  on('ui.render', { component: 'AbovePrompt' }, (($: any, e: any) => {
+    const { Box } = $.ui.resolve(e)
+    return <Box />
+  }) as any)
+  on('turn.complete', (() => ({ text: 'ok' })) as any)
+  // The turn ends while the call is still out, as when it is interrupted before the hook unwinds.
+  let before = ''
+  let after = ''
+  on('tool.call', (async () => {
+    before = await drawnAt(t$, 120)
+    await (t$ as any).turn.complete({ reason: 'interrupted', answer: '', durationMs: 1, isAborted: true, turnId: 't' })
+    after = await drawnAt(t$, 120)
+    return { result: 'ok' }
+  }) as any)
+  await t$.tool.call({ tool: 'Bash', command: '~/.claude/skills/kimi/scripts/kimi.sh "a"' } as any)
+  expect(before).toContain('working…')
+  expect(after).not.toContain('Kimi')
 })
 
 test('the cache pie counts down from the last model call, and asks for a handover', async ($, on) => {

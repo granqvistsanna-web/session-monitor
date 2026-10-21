@@ -6,14 +6,6 @@ export type AgentRow = {
   model?: string
 }
 
-export type Worker = {
-  provider: string
-  today: number
-  session: number
-  useful?: number
-  left?: number
-}
-
 declare module 'claude-code' {
   interface PluginState {
     'session-monitor': {
@@ -21,14 +13,11 @@ declare module 'claude-code' {
       effort: string
       agents: AgentRow[]
       isBandOpen: boolean
-      workers: Worker[]
-      spawns: Record<string, number>
       isCollapsed: boolean
       quota: Record<string, number>
       mood: string
       isAsking: boolean
       activeWorker: string
-      calls: Record<string, number>
       cacheAt: number
       cacheNow: number
     }

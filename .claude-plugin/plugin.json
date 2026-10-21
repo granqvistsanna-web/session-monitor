@@ -1,7 +1,7 @@
 {
   "name": "session-monitor",
-  "version": "0.10.0",
-  "description": "Which model is working and what has been delegated, in one line above the prompt",
+  "version": "0.11.0",
+  "description": "Which model is working and which worker it is waiting on, in one line above the prompt",
   "types": "./types/index.d.ts",
   "author": {
     "name": "Sanna Granqvist"

@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { Hook, Register } from 'claude-code'
 
-import type { AgentRow, Worker } from '../types'
+import type { AgentRow } from '../types'
 
 type Api = Parameters<Hook<'turn.complete'>>[0]
 
@@ -13,8 +13,6 @@ const model = atom({ plugin: 'session-monitor', key: 'model' } as const, '')
 const effort = atom({ plugin: 'session-monitor', key: 'effort' } as const, '')
 const agents = atom({ plugin: 'session-monitor', key: 'agents' } as const, [])
 const isBandOpen = atom({ plugin: 'session-monitor', key: 'isBandOpen' } as const, false)
-const workers = atom({ plugin: 'session-monitor', key: 'workers' } as const, [])
-const spawns = atom({ plugin: 'session-monitor', key: 'spawns' } as const, {})
 const quota = atom({ plugin: 'session-monitor', key: 'quota' } as const, {})
 const isCollapsed = atom({ plugin: 'session-monitor', key: 'isCollapsed' } as const, false)
 // The buddy's mood between turns, and whether a tool call is waiting on the person.
@@ -22,8 +20,6 @@ const mood = atom({ plugin: 'session-monitor', key: 'mood' } as const, 'idle')
 const isAsking = atom({ plugin: 'session-monitor', key: 'isAsking' } as const, false)
 // The off-Claude worker a foreground Bash call is waiting on right now (kimi, gemini, openrouter).
 const activeWorker = atom({ plugin: 'session-monitor', key: 'activeWorker' } as const, '')
-// Wrapper calls this session made itself, counted from its own Bash calls (the shared log has no session id).
-const calls = atom({ plugin: 'session-monitor', key: 'calls' } as const, {})
 // When the main thread last called the model (each call refreshes the prompt cache; -1 before the first), and the clock
 // the pie reads, ticked while the cache is warm.
 const cacheAt = atom({ plugin: 'session-monitor', key: 'cacheAt' } as const, -1)
@@ -66,14 +62,8 @@ const dot = (status: string): { glyph: string; color: string } =>
         ? { glyph: '✕', color: '#E5484D' }
         : { glyph: '✓', color: 'inactive' }
 
-// --- Off-Claude workers, read from the usage skill's log -------------------
-
-const PROVIDERS = ['kimi', 'gemini', 'openrouter'] as const
-const OPENROUTER_DAILY = 50
-const DAY_MS = 86_400_000
+// Wrapper calls that refresh the quota once they return.
 const LOG_RE = /(kimi|gemini|openrouter)\.sh|usage\/scripts\/log\.py/
-
-let sessionStartedAt = 0
 
 const family = (id: string) => {
   const m = id.toLowerCase()
@@ -140,64 +130,6 @@ function ModelMark(ui: any, id: string, state: string) {
       {glyph}
     </ui.Text>
   )
-}
-
-// Start of "today" for each provider's quota: Gemini resets at midnight Pacific,
-// OpenRouter at 00:00 UTC, Kimi has rolling windows so local midnight is used.
-function dayStart(provider: string, now: number) {
-  if (provider === 'openrouter') return Math.floor(now / DAY_MS) * DAY_MS
-  const offsetMin = provider === 'gemini' ? -pacificOffset(now) : new Date(now).getTimezoneOffset()
-  const shifted = now - offsetMin * 60_000
-  return Math.floor(shifted / DAY_MS) * DAY_MS + offsetMin * 60_000
-}
-
-function pacificOffset(now: number) {
-  try {
-    const parts = new Intl.DateTimeFormat('en-US', { timeZone: 'America/Los_Angeles', timeZoneName: 'shortOffset' })
-      .formatToParts(new Date(now))
-      .find(p => p.type === 'timeZoneName')?.value
-    const hours = Number(parts?.replace('GMT', '') || -8)
-    return hours * 60
-  } catch {
-    return -8 * 60
-  }
-}
-
-async function refreshWorkers($: Api) {
-  const home = await $.env.get('HOME')
-  const path = (await $.env.get('DELEGATE_USAGE_LOG'))?.replace(/^~/, home ?? '~') ?? `${home}/.claude/usage/delegate-log.jsonl`
-  if (!(await $.fs.exists(path))) return
-  const text = await $.fs.read(path)
-  const now = await $.clock.now()
-  const calls: { id: string; provider: string; t: number }[] = []
-  const verdicts = new Map<string, string>()
-  for (const line of text.split('\n')) {
-    if (!line.trim()) continue
-    let row: Record<string, unknown>
-    try {
-      row = JSON.parse(line)
-    } catch {
-      continue
-    }
-    const t = Date.parse(String(row.ts ?? ''))
-    if (row.type === 'verdict') verdicts.set(String(row.id), String(row.verdict))
-    else if (row.type !== 'verdict' && typeof row.provider === 'string') calls.push({ id: String(row.id), provider: row.provider, t })
-  }
-  const list: Worker[] = PROVIDERS.map(provider => {
-    const mine = calls.filter(c => c.provider === provider)
-    const since = dayStart(provider, now)
-    const today = mine.filter(c => c.t >= since).length
-    const recent = mine.filter(c => c.t >= now - 30 * DAY_MS && verdicts.has(c.id))
-    const kept = recent.filter(c => verdicts.get(c.id) !== 'discarded').length
-    return {
-      provider,
-      today,
-      session: sessionStartedAt ? mine.filter(c => c.t >= sessionStartedAt).length : 0,
-      useful: recent.length >= 3 ? Math.round((kept / recent.length) * 100) : undefined,
-      left: provider === 'openrouter' ? Math.max(0, OPENROUTER_DAILY - today) : undefined,
-    }
-  })
-  await update($, workers, () => list)
 }
 
 // Share of each worker's quota used, from the usage skill's quota script.
@@ -346,14 +278,12 @@ const Chip = (Text: any, c: ChipData, compact = false, first = true) => (
 const chipCells = (c: ChipData, compact: boolean) =>
   (compact ? 3 + initial(c).length : 3 + c.name.length) + (c.n ? 1 + String(c.n).length : 0) + (c.used !== undefined ? 2 + String(Math.round(c.used)).length : 0)
 
-// One line: the model at work, what has been delegated, and live agents.
+// One line: the model at work, the worker it is waiting on, and live agents.
 async function Card($: Api, e: { surface: string }, ui: any, mode: 'band' | 'pane') {
   const { Box, Text, Button } = ui
   const m = await read($, model)
   const eff = await read($, effort)
   const list = await read($, agents)
-  const sp = await read($, spawns)
-  const mine = await read($, calls)
   const q = await read($, quota)
   const low = (k: string) => (q[k] !== undefined && q[k] >= QUOTA_WARN ? q[k] : undefined)
   const isOpen = mode === 'pane' || (await read($, isBandOpen))
@@ -382,13 +312,9 @@ async function Card($: Api, e: { surface: string }, ui: any, mode: 'band' | 'pan
   }
 
   const chip = (key: string, k: string, n: number, used?: number): ChipData => ({ key, provider: k, color: WORKER_COLORS[k] ?? MUTED, name: label(k), n, used })
-  const delegatedData = [
-    ...Object.entries(sp).map(([k, n]) => chip(`s-${k}`, k, n)),
-    ...Object.entries(mine).filter(([, n]) => n > 0).map(([k, n]) => chip(`s-${k}`, k, n, low(k))),
-  ]
-  // A worker running low shows even before this session has used it.
+  // A worker running low on quota, whether or not this session has used it.
   const lowData = Object.keys(q)
-    .filter(k => low(k) !== undefined && !(mine[k] > 0))
+    .filter(k => low(k) !== undefined)
     .map(k => chip(`q-${k}`, k, 0, low(k)))
   const perModel = new Map<string, number>()
   for (const a of live) if (a.model) perModel.set(label(family(a.model)), (perModel.get(label(family(a.model))) ?? 0) + 1)
@@ -409,8 +335,6 @@ async function Card($: Api, e: { surface: string }, ui: any, mode: 'band' | 'pan
       2 + name.length +
       (eff && level < 1 ? 3 + eff.length : 0) +
       (worker ? 6 + label(worker).length + (compact ? 0 : 9) : 0) +
-      (delegatedData.length ? (level < 3 ? 12 : 1) : 0) +
-      delegatedData.reduce((sum, c) => sum + chipCells(c, compact), 0) +
       (lowData.length ? (level < 3 ? 6 : 1) : 0) +
       lowData.reduce((sum, c) => sum + chipCells(c, compact), 0)
     const right =
@@ -422,7 +346,6 @@ async function Card($: Api, e: { surface: string }, ui: any, mode: 'band' | 'pan
   const cols = mode === 'band' ? Number((e as any).props?.bodyColumns) || 999 : 999
   const level = [0, 1, 2].find(l => cellsAt(l) <= cols) ?? 3
   const compact = level >= 2
-  const delegated = delegatedData.map((c, i) => Chip(Text, c, compact, i === 0))
   const lowOnly = lowData.map((c, i) => Chip(Text, c, compact, i === 0))
 
   return (
@@ -442,8 +365,6 @@ async function Card($: Api, e: { surface: string }, ui: any, mode: 'band' | 'pan
           ) : (
             ''
           )}
-          {delegated.length ? <Text dimColor>{level < 3 ? '   delegated' : ' '}</Text> : ''}
-          {delegated}
           {lowOnly.length ? <Text dimColor>{level < 3 ? '   low' : ' '}</Text> : ''}
           {lowOnly}
         </Text>
@@ -507,7 +428,7 @@ export const register: Register = on => {
     const ran = await next(e)
     await $.command.register({
       name: 'monitor',
-      description: 'Open the session monitor: model, agents and delegation',
+      description: 'Open the session monitor: model, workers and agents',
     })
     $.ui.status(undefined)
     const collapsed = (await $.store.get('collapsed')) === true
@@ -515,8 +436,8 @@ export const register: Register = on => {
     await setMood($, 'idle')
     const id = await $.session.model()
     await update($, model, () => id)
-    sessionStartedAt = (await $.session.usage()).startedAt
-    await refreshWorkers($).catch(() => undefined)
+    // A call cut off by a reload never ran its finally: start clear.
+    await update($, activeWorker, () => '')
     void refreshQuota($, true).catch(() => undefined)
     await refreshAgents($)
     // After a reload the last call's time is still in state: keep counting from it.
@@ -550,8 +471,6 @@ export const register: Register = on => {
     const ran = await next(e)
     if ('agentId' in ran && ran.agentId) {
       agentModels.set(ran.agentId, ran.model)
-      const f = family(ran.model)
-      await update($, spawns, all => ({ ...all, [f]: (all[f] ?? 0) + 1 }))
     }
     await refreshAgents($).catch(() => undefined)
 
@@ -574,21 +493,14 @@ export const register: Register = on => {
 
   on('prompt.submit', async ($, e, next) => {
     await setMood($, 'idle')
+    await update($, activeWorker, () => '')
 
     return next(e)
   })
 
   on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
-    // A wrapper call in the foreground: show the worker while it runs. A background call returns
-    // at once; both count toward this session's delegated tally right away.
-    const used = [...e.command.matchAll(/scripts\/(kimi|gemini|openrouter)\.sh/g)].map(m => m[1])
-    if (used.length)
-      await update($, calls, all => {
-        const tally = { ...all }
-        for (const k of used) tally[k] = (tally[k] ?? 0) + 1
-        return tally
-      })
-    const worker = (e as any).run_in_background ? undefined : used[0]
+    // A wrapper call in the foreground: show the worker while it runs. A background call returns at once.
+    const worker = (e as any).run_in_background ? undefined : e.command.match(/scripts\/(kimi|gemini|openrouter)\.sh/)?.[1]
     if (worker) await update($, activeWorker, () => worker)
     let ran
     try {
@@ -597,7 +509,6 @@ export const register: Register = on => {
       if (worker) await update($, activeWorker, () => '')
     }
     if (LOG_RE.test(e.command)) {
-      await refreshWorkers($).catch(() => undefined)
       void refreshQuota($, true).catch(() => undefined)
     }
 
@@ -607,11 +518,12 @@ export const register: Register = on => {
   on('turn.complete', async ($, e, next) => {
     const ran = await next(e)
     await update($, isAsking, () => false)
+    // An interrupted call can skip its finally; nothing is running once the turn is over.
+    await update($, activeWorker, () => '')
     if (e.reason === 'error') await setMood($, 'error', 5000)
     else if (e.reason === 'answer') await setMood($, 'happy', 3000)
     else await setMood($, 'idle')
     await refreshAgents($)
-    await refreshWorkers($).catch(() => undefined)
     void refreshQuota($).catch(() => undefined)
 
     return ran

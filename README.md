@@ -3,7 +3,7 @@
 A Claude Code mod that shows, live in the chat:
 
 - the model and effort level the session is running on
-- delegation: what this session sent to Haiku, Sonnet, Opus, Fable, Kimi, Gemini and OpenRouter
+- the worker it is waiting on right now: `→ ● Kimi working…` while a foreground Kimi, Gemini or OpenRouter call runs, gone as soon as it returns or the turn ends
 - quota: Kimi or OpenRouter at 70% or more of its quota shows with the percentage (amber, red from 90%); Gemini has no quota API so it never shows one
 - agents: how many are running and on which model (click to list them)
 
@@ -11,7 +11,7 @@ It's one small line above the prompt; `hide` shrinks it to just the model, and c
 
 At the right edge a small pie counts down the hour the prompt cache stays warm, restarting on every main-thread model call (green, then amber under 15 min, red under 5, an empty ring once cold). Clicking the minutes next to it asks Claude for a handover (the `handover` skill in `~/.claude/skills/handover`), a paste-ready summary for a fresh session.
 
-Quota comes from `~/.claude/skills/usage/scripts/quota.py` (checked every 5 minutes and after each worker call). Off-Claude worker figures are read from the usage log at `~/.claude/usage/delegate-log.jsonl` (or `$DELEGATE_USAGE_LOG`); without that log only Claude subagents are counted.
+Quota comes from `~/.claude/skills/usage/scripts/quota.py` (checked every 5 minutes and after each worker call).
 
 ## Install
 
