@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { Hook, Register } from 'claude-code'
 
-import type { AgentRow } from '../types'
+import type { AgentRow, TaskRow } from '../types'
 
 type Api = Parameters<Hook<'turn.complete'>>[0]
 
@@ -24,6 +24,9 @@ const activeWorker = atom({ plugin: 'session-monitor', key: 'activeWorker' } as 
 // the pie reads, ticked while the cache is warm.
 const cacheAt = atom({ plugin: 'session-monitor', key: 'cacheAt' } as const, -1)
 const cacheNow = atom({ plugin: 'session-monitor', key: 'cacheNow' } as const, 0)
+// The main thread's own task list (TaskCreate/TaskUpdate or TodoWrite), and whether its steps are listed.
+const tasks = atom({ plugin: 'session-monitor', key: 'tasks' } as const, [])
+const isTasksOpen = atom({ plugin: 'session-monitor', key: 'isTasksOpen' } as const, false)
 
 const shortModel = (id: string) =>
   id
@@ -252,6 +255,59 @@ async function setMood($: Api, next: string, ms?: number) {
   else if (next === 'idle') moodTimer = $.clock.after(SLEEP_MS, () => void setMood($, 'sleep'))
 }
 
+// --- Task progress ----------------------------------------------------------
+
+// Short lists stay quiet; a finished list shows "Done" this long, then goes.
+const TASKS_MIN = 3
+const TASKS_DONE_MS = 4000
+const TASK_ROWS = 5
+const DONE_COLOR = '#93C47D'
+
+const isDone = (list: TaskRow[]) => list.length > 0 && list.every(t => t.status === 'completed')
+
+let tasksTimer: { cancel: () => void } | undefined
+
+async function setTasks($: Api, fn: (all: TaskRow[]) => TaskRow[]) {
+  await update($, tasks, fn)
+  tasksTimer?.cancel()
+  tasksTimer = undefined
+  if (isDone(await read($, tasks))) tasksTimer = $.clock.after(TASKS_DONE_MS, () => void clearTasks($))
+}
+
+async function clearTasks($: Api) {
+  await update($, tasks, () => [])
+  await update($, isTasksOpen, () => false)
+}
+
+const cut = (text: string, n: number) => (text.length > n ? `${text.slice(0, n - 1).trimEnd()}…` : text)
+
+// The progress strip at each fitting level: bar, count and the step under way.
+// 0–1 "▰▰▰▰▰▱▱▱ 3/5 · 60% Writing tests…" · 2 "▰▰▰▱ 60% Writing…" · 3 "60%".
+function progress(list: TaskRow[], level: number) {
+  const n = list.filter(t => t.status === 'completed').length
+  const done = n === list.length
+  const pct = Math.round((n / list.length) * 100)
+  const width = level >= 3 ? 0 : level >= 2 ? 4 : 8
+  const filled = done ? width : Math.floor((n / list.length) * width)
+  const cur = list.find(t => t.status === 'in_progress')
+  const step = done ? '' : level >= 3 || !cur ? '' : cut(cur.active || cur.subject, level >= 2 ? 16 : 28)
+  const count = done ? (level >= 2 ? '✓' : `${n}/${list.length} ✓ Done`) : level >= 2 ? `${pct}%` : `${n}/${list.length} · ${pct}%`
+  const bar = '▰'.repeat(filled) + '▱'.repeat(width - filled)
+  const cells = bar.length + (bar ? 1 : 0) + count.length + (step ? 2 + step.length : 0)
+  return { bar, count, step, done, cells }
+}
+
+// The steps, at most TASK_ROWS of them, starting just before the one under way.
+function taskRows(list: TaskRow[]) {
+  const at = list.findIndex(t => t.status !== 'completed')
+  const from = Math.max(0, Math.min((at < 0 ? list.length : at) - 1, list.length - TASK_ROWS))
+  const rows = list.slice(from, from + TASK_ROWS)
+  return { rows, earlier: from, later: list.length - from - rows.length }
+}
+
+const taskGlyph = (status: string) =>
+  status === 'completed' ? { glyph: '✓', color: 'inactive' } : status === 'in_progress' ? { glyph: '●', color: ACCENT } : { glyph: '○', color: 'inactive' }
+
 async function toggleCollapsed($: Api) {
   const next = !(await read($, isCollapsed))
   await update($, isCollapsed, () => next)
@@ -296,6 +352,21 @@ async function Card($: Api, e: { surface: string }, ui: any, mode: 'band' | 'pan
   const isWorking = (e as any).props?.isWorking === true
   const state = (await read($, isAsking)) ? 'waiting' : isWorking ? 'working' : await read($, mood)
   const cacheMin = mode === 'band' ? await cacheLeft($) : undefined
+  const tl = await read($, tasks)
+  const hasTasks = tl.length >= TASKS_MIN
+  const isTasksShown = hasTasks && (await read($, isTasksOpen))
+  const ProgressButton = (level: number) => {
+    const pr = progress(tl, level)
+    return (
+      <Button key="tasks" plain onPress={() => update($, isTasksOpen, open => !open)}>
+        <Text size="caption" tabular wrap="truncate-end">
+          {pr.bar ? <Text color={pr.done ? DONE_COLOR : ACCENT}>{pr.bar} </Text> : ''}
+          <Text weight="semibold" color={pr.done ? DONE_COLOR : undefined}>{pr.count}</Text>
+          {pr.step ? <Text dimColor>{'  '}{pr.step}</Text> : ''}
+        </Text>
+      </Button>
+    )
+  }
 
   if (mode === 'band' && (await read($, isCollapsed))) {
     return (
@@ -306,6 +377,7 @@ async function Card($: Api, e: { surface: string }, ui: any, mode: 'band' | 'pan
             {name} ▸
           </Text>
         </Button>
+        {hasTasks && ProgressButton(3)}
         {cacheMin !== undefined && CachePie($, ui, cacheMin)}
       </Box>
     )
@@ -336,7 +408,8 @@ async function Card($: Api, e: { surface: string }, ui: any, mode: 'band' | 'pan
       (eff && level < 1 ? 3 + eff.length : 0) +
       (worker ? 6 + label(worker).length + (compact ? 0 : 9) : 0) +
       (lowData.length ? (level < 3 ? 6 : 1) : 0) +
-      lowData.reduce((sum, c) => sum + chipCells(c, compact), 0)
+      lowData.reduce((sum, c) => sum + chipCells(c, compact), 0) +
+      (hasTasks ? 3 + progress(tl, level).cells : 0)
     const right =
       (showAgents && mode === 'band' ? 4 + agentText(level).length : 0) +
       (mode === 'band' ? 6 : 0) +
@@ -368,6 +441,7 @@ async function Card($: Api, e: { surface: string }, ui: any, mode: 'band' | 'pan
           {lowOnly.length ? <Text dimColor>{level < 3 ? '   low' : ' '}</Text> : ''}
           {lowOnly}
         </Text>
+        {hasTasks && ProgressButton(level)}
         </Box>
         <Box flexDirection="row" columnGap={compact ? 1 : 2} flexShrink={0}>
           {mode === 'band' && list.length === 0 ? (
@@ -396,6 +470,34 @@ async function Card($: Api, e: { surface: string }, ui: any, mode: 'band' | 'pan
         </Box>
       </Box>
 
+      {isTasksShown &&
+        (() => {
+          const { rows, earlier, later } = taskRows(tl)
+          return [
+            earlier ? (
+              <Box key="t-earlier" paddingLeft={2}>
+                <Text size="caption" dimColor>+{earlier} earlier</Text>
+              </Box>
+            ) : null,
+            ...rows.map(t => {
+              const g = taskGlyph(t.status)
+              const isCur = t.status === 'in_progress'
+              return (
+                <Box key={`t-${t.id}`} flexDirection="row" columnGap={1} paddingLeft={2}>
+                  <Text color={g.color}>{g.glyph}</Text>
+                  <Text size="caption" dimColor={!isCur} weight={isCur ? 'semibold' : undefined} wrap="truncate-end">
+                    {isCur ? `${t.active || t.subject}…` : t.subject}
+                  </Text>
+                </Box>
+              )
+            }),
+            later ? (
+              <Box key="t-later" paddingLeft={2}>
+                <Text size="caption" dimColor>+{later} more</Text>
+              </Box>
+            ) : null,
+          ].filter(Boolean)
+        })()}
       {isOpen &&
         shown.map(a => {
           const s = dot(a.status)
@@ -423,6 +525,35 @@ async function Card($: Api, e: { surface: string }, ui: any, mode: 'band' | 'pan
   )
 }
 
+// The main thread's task list. TodoWrite sends it whole; TaskCreate and TaskUpdate change one step.
+const trackTasks: Hook<'tool.call'> = async ($, e, next) => {
+  const ran = await next(e)
+  const x = e as any
+  const r = (ran as any)?.result
+  if (x.agentId || !r || (ran as any).isError) return ran
+  if (e.tool === 'TodoWrite' && Array.isArray(x.todos))
+    await setTasks($, () =>
+      x.todos.map((t: any, i: number) => ({ id: String(i), subject: String(t.content), active: String(t.activeForm ?? ''), status: t.status })),
+    )
+  else if (e.tool === 'TaskCreate' && r.task?.id)
+    await setTasks($, all => [
+      ...(isDone(all) ? [] : all),
+      { id: String(r.task.id), subject: String(x.subject), active: String(x.activeForm ?? ''), status: 'pending' },
+    ])
+  else if (e.tool === 'TaskUpdate' && r.success !== false)
+    await setTasks($, all =>
+      x.status === 'deleted'
+        ? all.filter(t => t.id !== String(x.taskId))
+        : all.map(t =>
+            t.id === String(x.taskId)
+              ? { ...t, subject: x.subject ?? t.subject, active: x.activeForm ?? t.active, status: x.status ?? t.status }
+              : t,
+          ),
+    )
+
+  return ran
+}
+
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     const ran = await next(e)
@@ -438,6 +569,8 @@ export const register: Register = on => {
     await update($, model, () => id)
     // A call cut off by a reload never ran its finally: start clear.
     await update($, activeWorker, () => '')
+    // So did a finished list's timer.
+    if (isDone(await read($, tasks))) await clearTasks($)
     void refreshQuota($, true).catch(() => undefined)
     await refreshAgents($)
     // After a reload the last call's time is still in state: keep counting from it.
@@ -497,6 +630,10 @@ export const register: Register = on => {
 
     return next(e)
   })
+
+  on('tool.call', { tool: 'TodoWrite' }, trackTasks)
+  on('tool.call', { tool: 'TaskCreate' }, trackTasks)
+  on('tool.call', { tool: 'TaskUpdate' }, trackTasks)
 
   on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
     // A wrapper call in the foreground: show the worker while it runs. A background call returns at once.

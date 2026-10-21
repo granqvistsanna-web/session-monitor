@@ -6,6 +6,14 @@ export type AgentRow = {
   model?: string
 }
 
+export type TaskRow = {
+  id: string
+  subject: string
+  /** The "…ing" form shown while the step is under way. */
+  active: string
+  status: 'pending' | 'in_progress' | 'completed'
+}
+
 declare module 'claude-code' {
   interface PluginState {
     'session-monitor': {
@@ -20,6 +28,8 @@ declare module 'claude-code' {
       activeWorker: string
       cacheAt: number
       cacheNow: number
+      tasks: TaskRow[]
+      isTasksOpen: boolean
     }
   }
 }

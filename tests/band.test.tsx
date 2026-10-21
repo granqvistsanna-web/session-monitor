@@ -250,3 +250,84 @@ test('the cache pie counts down from the last model call, and asks for a handove
     await band.unmount()
   }
 })
+
+const STEPS = ['Read the code', 'Drop the tally', 'Clear the worker', 'Write tests', 'Ship it']
+
+// Answers TaskCreate and TaskUpdate the way the engine does.
+const taskTools = (on: any) => {
+  let n = 0
+  on('tool.call', { tool: 'TaskCreate' }, (() => ({ result: { task: { id: String(++n), subject: 's' } } })) as any)
+  on('tool.call', { tool: 'TaskUpdate' }, ((_$: any, e: any) => ({ result: { success: true, taskId: e.taskId, updatedFields: ['status'] } })) as any)
+}
+
+const bandAt = async ($: any, surface: 'terminal' | 'desktop', bodyColumns = 120) =>
+  $.ui.mount({ plugin: 'session-monitor', surface, component: 'AbovePrompt', props: { ...PROPS, bodyColumns } } as any)
+
+test('a task list shows a progress bar, the step under way, and the steps on click', async ($, on) => {
+  mock.clock(on)
+  mock.store(on, {})
+  on('ui.render', { component: 'AbovePrompt' }, (($: any, e: any) => {
+    const { Box } = $.ui.resolve(e)
+    return <Box />
+  }) as any)
+  taskTools(on)
+  for (const [i, subject] of STEPS.entries())
+    await $.tool.call({ tool: 'TaskCreate', subject, description: subject, activeForm: i === 3 ? 'Writing tests' : undefined } as any)
+  for (const id of ['1', '2', '3']) await $.tool.call({ tool: 'TaskUpdate', taskId: id, status: 'completed' } as any)
+  await $.tool.call({ tool: 'TaskUpdate', taskId: '4', status: 'in_progress' } as any)
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const band = await bandAt($, surface)
+    const drawn = JSON.stringify(await band.drawn())
+    expect(drawn).toContain('▰▰▰▰▱▱▱▱')
+    expect(drawn).toContain('3/5 · 60%')
+    expect(drawn).toContain('Writing tests')
+    expect(drawn).not.toContain('Drop the tally')
+    await band.press({ key: 'tasks' })
+    const open = JSON.stringify(await band.drawn())
+    for (const step of ['Clear the worker', 'Writing tests…', 'Ship it']) expect(open).toContain(step)
+    await band.press({ key: 'tasks' })
+    await band.unmount()
+  }
+  const narrow = JSON.stringify(await (await bandAt($, 'desktop', 30)).drawn())
+  expect(narrow).toContain('60%')
+  expect(narrow).not.toContain('3/5')
+})
+
+test('a short list stays quiet, and a finished one says Done and then goes', async ($, on) => {
+  const clock = mock.clock(on)
+  mock.store(on, {})
+  on('ui.render', { component: 'AbovePrompt' }, (($: any, e: any) => {
+    const { Box } = $.ui.resolve(e)
+    return <Box />
+  }) as any)
+  on('tool.call', { tool: 'TodoWrite' }, (() => ({ result: { oldTodos: [], newTodos: [] } })) as any)
+  const todos = (done: number, total: number) =>
+    Array.from({ length: total }, (_, i) => ({ content: `Step ${i + 1}`, activeForm: `Doing ${i + 1}`, status: i < done ? 'completed' : 'pending' }))
+  await $.tool.call({ tool: 'TodoWrite', todos: todos(0, 2) } as any)
+  let band = await bandAt($, 'desktop')
+  expect(await band.find({ key: 'tasks' })).toBeUndefined()
+  await band.unmount()
+  await $.tool.call({ tool: 'TodoWrite', todos: todos(4, 4) } as any)
+  band = await bandAt($, 'desktop')
+  expect(JSON.stringify(await band.drawn())).toContain('4/4 ✓ Done')
+  await band.unmount()
+  await clock.advance(5000)
+  band = await bandAt($, 'desktop')
+  expect(await band.find({ key: 'tasks' })).toBeUndefined()
+  await band.unmount()
+})
+
+test('a subagent task list leaves the band alone', async ($, on) => {
+  mock.clock(on)
+  mock.store(on, {})
+  on('ui.render', { component: 'AbovePrompt' }, (($: any, e: any) => {
+    const { Box } = $.ui.resolve(e)
+    return <Box />
+  }) as any)
+  on('tool.call', { tool: 'TodoWrite' }, (() => ({ result: { oldTodos: [], newTodos: [] } })) as any)
+  const todos = STEPS.map(content => ({ content, activeForm: content, status: 'pending' }))
+  await $.tool.call({ tool: 'TodoWrite', todos, agentId: 'a1' } as any)
+  const band = await bandAt($, 'desktop')
+  expect(await band.find({ key: 'tasks' })).toBeUndefined()
+  await band.unmount()
+})

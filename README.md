@@ -6,6 +6,7 @@ A Claude Code mod that shows, live in the chat:
 - the worker it is waiting on right now: `→ ● Kimi working…` while a foreground Kimi, Gemini or OpenRouter call runs, gone as soon as it returns or the turn ends
 - quota: Kimi or OpenRouter at 70% or more of its quota shows with the percentage (amber, red from 90%); Gemini has no quota API so it never shows one
 - agents: how many are running and on which model (click to list them)
+- task progress: while Claude works through its own task list (3 steps or more), a bar, the count and the step under way, `▰▰▰▰▰▱▱▱ 3/5 · 60%  Writing tests…`; click it to list the steps. A finished list shows `✓ Done` for a few seconds, then goes. Subagents' lists don't count
 
 It's one small line above the prompt; `hide` shrinks it to just the model, and clicking that brings it back. `/monitor` opens the same view as a pane.
 
