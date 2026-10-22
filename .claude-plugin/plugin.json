@@ -1,6 +1,6 @@
 {
   "name": "session-monitor",
-  "version": "0.12.0",
+  "version": "0.13.0",
   "description": "Which model is working and which worker it is waiting on, and how far its task list has come, in one line above the prompt",
   "types": "./types/index.d.ts",
   "author": {
