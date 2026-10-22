@@ -30,6 +30,10 @@ declare module 'claude-code' {
       cacheNow: number
       tasks: TaskRow[]
       isTasksOpen: boolean
+      turnAt: number
+      turnNow: number
+      turnSteps: number
+      activity: string
     }
   }
 }

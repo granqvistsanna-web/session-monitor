@@ -27,6 +27,11 @@ const cacheNow = atom({ plugin: 'session-monitor', key: 'cacheNow' } as const, 0
 // The main thread's own task list (TaskCreate/TaskUpdate or TodoWrite), and whether its steps are listed.
 const tasks = atom({ plugin: 'session-monitor', key: 'tasks' } as const, [])
 const isTasksOpen = atom({ plugin: 'session-monitor', key: 'isTasksOpen' } as const, false)
+// The turn under way (-1 between turns), the clock its timer reads, its tool calls and the one running now.
+const turnAt = atom({ plugin: 'session-monitor', key: 'turnAt' } as const, -1)
+const turnNow = atom({ plugin: 'session-monitor', key: 'turnNow' } as const, 0)
+const turnSteps = atom({ plugin: 'session-monitor', key: 'turnSteps' } as const, 0)
+const activity = atom({ plugin: 'session-monitor', key: 'activity' } as const, '')
 
 const shortModel = (id: string) =>
   id
@@ -255,6 +260,67 @@ async function setMood($: Api, next: string, ms?: number) {
   else if (next === 'idle') moodTimer = $.clock.after(SLEEP_MS, () => void setMood($, 'sleep'))
 }
 
+// --- Turn progress ----------------------------------------------------------
+
+// Shown once a turn has run this long, so quick answers don't flash it.
+const TURN_SHOW_MS = 15_000
+const TURN_TICK_MS = 15_000
+
+let turnTick: { cancel: () => void } | undefined
+
+function startTurnTick($: Api) {
+  if (turnTick) return
+  turnTick = $.clock.every(TURN_TICK_MS, () => {
+    void (async () => {
+      const t = await $.clock.now()
+      await update($, turnNow, () => t)
+    })()
+  })
+}
+
+async function startTurn($: Api) {
+  if ((await read($, turnAt)) >= 0) return
+  const now = await $.clock.now()
+  await update($, turnAt, () => now)
+  await update($, turnNow, () => now)
+  await update($, turnSteps, () => 0)
+  await update($, activity, () => '')
+  startTurnTick($)
+}
+
+async function endTurn($: Api) {
+  turnTick?.cancel()
+  turnTick = undefined
+  await update($, turnAt, () => -1)
+  await update($, activity, () => '')
+}
+
+const elapsed = (ms: number) => {
+  const min = Math.floor(ms / 60_000)
+  return min < 1 ? '<1m' : min < 60 ? `${min}m` : `${Math.floor(min / 60)}h ${String(min % 60).padStart(2, '0')}m`
+}
+
+const baseName = (path: unknown) => (typeof path === 'string' ? path.split('/').pop() ?? path : '')
+
+function describe(e: any): string {
+  const tool = String(e.tool)
+  if (tool === 'Bash') return `Bash: ${e.description || String(e.command ?? '').split('\n')[0]}`
+  if (['Edit', 'Write', 'Read', 'NotebookEdit'].includes(tool)) return `${tool} ${baseName(e.file_path ?? e.notebook_path)}`
+  if (tool === 'Agent') return `Agent: ${e.description ?? ''}`
+  if (tool === 'Skill') return `Skill: ${e.skill ?? ''}`
+  if (tool === 'WebSearch') return `Search: ${e.query ?? ''}`
+  if (tool === 'WebFetch') return `Fetch: ${e.url ?? ''}`
+  return tool.startsWith('mcp__') ? tool.split('__').slice(-1)[0] : tool
+}
+
+// The progress strip when there is no task list: time, tool calls and the call running now.
+function turnLine(at: number, now: number, steps: number, doing: string, level: number) {
+  if (at < 0 || now - at < TURN_SHOW_MS) return { text: '', cells: 0 }
+  const parts = [`⏱ ${elapsed(now - at)}`, ...(level < 3 ? [`${steps} ${steps === 1 ? 'step' : 'steps'}`] : [])]
+  const fixed = `  ${parts.join(' · ')}`
+  return { text: level < 2 ? `${fixed} · ${cut(doing || 'thinking…', 32)}` : fixed, cells: fixed.length }
+}
+
 // --- Task progress ----------------------------------------------------------
 
 // Short lists stay quiet; a finished list shows "Done" this long, then goes.
@@ -355,6 +421,11 @@ async function Card($: Api, e: { surface: string }, ui: any, mode: 'band' | 'pan
   const tl = await read($, tasks)
   const hasTasks = tl.length >= TASKS_MIN
   const isTasksShown = hasTasks && (await read($, isTasksOpen))
+  const tAt = mode === 'band' && !hasTasks ? await read($, turnAt) : -1
+  const tNow = await read($, turnNow)
+  const tSteps = await read($, turnSteps)
+  const doing = await read($, activity)
+  const turnInfo = (level: number) => turnLine(tAt, tNow, tSteps, doing, level)
   const ProgressButton = (level: number) => {
     const pr = progress(tl, level)
     return (
@@ -378,6 +449,7 @@ async function Card($: Api, e: { surface: string }, ui: any, mode: 'band' | 'pan
           </Text>
         </Button>
         {hasTasks && ProgressButton(3)}
+        {turnInfo(3).text ? <Text size="caption" dimColor tabular>{turnInfo(3).text}</Text> : ''}
         {cacheMin !== undefined && CachePie($, ui, cacheMin)}
       </Box>
     )
@@ -409,7 +481,8 @@ async function Card($: Api, e: { surface: string }, ui: any, mode: 'band' | 'pan
       (worker ? 6 + label(worker).length + (compact ? 0 : 9) : 0) +
       (lowData.length ? (level < 3 ? 6 : 1) : 0) +
       lowData.reduce((sum, c) => sum + chipCells(c, compact), 0) +
-      (hasTasks ? 3 + progress(tl, level).cells : 0)
+      (hasTasks ? 3 + progress(tl, level).cells : 0) +
+      turnInfo(level).cells
     const right =
       (showAgents && mode === 'band' ? 4 + agentText(level).length : 0) +
       (mode === 'band' ? 6 : 0) +
@@ -440,6 +513,7 @@ async function Card($: Api, e: { surface: string }, ui: any, mode: 'band' | 'pan
           )}
           {lowOnly.length ? <Text dimColor>{level < 3 ? '   low' : ' '}</Text> : ''}
           {lowOnly}
+          {turnInfo(level).text ? <Text dimColor>{turnInfo(level).text}</Text> : ''}
         </Text>
         {hasTasks && ProgressButton(level)}
         </Box>
@@ -578,6 +652,11 @@ export const register: Register = on => {
     const now = await $.clock.now()
     if (at >= 0) await update($, cacheNow, () => now)
     if (at >= 0 && now - at < CACHE_MS) startCacheTick($)
+    // A reload mid-turn keeps the turn's start in state; its timer has to restart.
+    if ((await read($, turnAt)) >= 0) {
+      await update($, turnNow, () => now)
+      startTurnTick($)
+    }
 
     return ran
   })
@@ -620,11 +699,19 @@ export const register: Register = on => {
 
   on('tool.call', async ($, e, next) => {
     if (await read($, isAsking)) await update($, isAsking, () => false)
-
-    return next(e)
+    if ((e as any).agentId) return next(e)
+    await startTurn($)
+    await update($, turnSteps, n => n + 1)
+    await update($, activity, () => describe(e))
+    try {
+      return await next(e)
+    } finally {
+      await update($, activity, () => '')
+    }
   })
 
   on('prompt.submit', async ($, e, next) => {
+    await startTurn($)
     await setMood($, 'idle')
     await update($, activeWorker, () => '')
 
@@ -654,6 +741,7 @@ export const register: Register = on => {
 
   on('turn.complete', async ($, e, next) => {
     const ran = await next(e)
+    await endTurn($)
     await update($, isAsking, () => false)
     // An interrupted call can skip its finally; nothing is running once the turn is over.
     await update($, activeWorker, () => '')

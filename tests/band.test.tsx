@@ -331,3 +331,23 @@ test('a subagent task list leaves the band alone', async ($, on) => {
   expect(await band.find({ key: 'tasks' })).toBeUndefined()
   await band.unmount()
 })
+
+test('a long turn shows time, steps and the call under way, then clears', async ($, on) => {
+  const clock = mock.clock(on)
+  mock.store(on, {})
+  on('ui.render', { component: 'AbovePrompt' }, (($: any, e: any) => {
+    const { Box } = $.ui.resolve(e)
+    return <Box />
+  }) as any)
+  on('tool.call', () => ({ result: 'done' } as any))
+  on('turn.complete', () => ({ text: 'ok' } as any))
+  const band = await $.ui.mount({ plugin: 'session-monitor', surface: 'terminal', component: 'AbovePrompt', props: PROPS } as any)
+  await $.tool.call({ tool: 'Read', file_path: '/repo/lib/home.dart' } as any)
+  await $.tool.call({ tool: 'Read', file_path: '/repo/lib/home.dart' } as any)
+  expect(JSON.stringify(await band.drawn())).not.toMatch(/steps/)
+  await clock.advance(3 * 60_000)
+  expect(JSON.stringify(await band.drawn())).toMatch(/3m · 2 steps · thinking/)
+  await $.turn.complete({ reason: 'answer', answer: 'ok', durationMs: 1, isAborted: false, turnId: 't1' } as any)
+  expect(JSON.stringify(await band.drawn())).not.toMatch(/steps/)
+  await band.unmount()
+})
